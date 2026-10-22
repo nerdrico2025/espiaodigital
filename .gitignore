@@ -1,0 +1,16 @@
+node_modules/
+.next/
+dist/
+out/
+*.log
+.env
+.env.local
+.env.*.local
+.DS_Store
+coverage/
+supabase/.temp/
+media-tmp/
+*.tsbuildinfo
+
+# Artefatos do smoke test real
+scripts/out/

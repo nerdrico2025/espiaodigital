@@ -1,0 +1,24 @@
+{
+  "name": "espiao-de-ofertas",
+  "private": true,
+  "version": "0.1.0",
+  "description": "MVP Espião de Ofertas Escaladas — descobre concorrentes e analisa anúncios escalados na Meta Ad Library",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "build:shared": "npm run build -w @espiao/shared",
+    "typecheck": "npm run typecheck -w @espiao/shared && npm run typecheck -w @espiao/worker && npm run typecheck -w @espiao/web",
+    "smoke": "tsx scripts/smoke-test.ts",
+    "dev:web": "npm run dev -w @espiao/web",
+    "dev:worker": "npm run dev -w @espiao/worker"
+  },
+  "devDependencies": {
+    "tsx": "4.19.2",
+    "typescript": "5.6.3"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

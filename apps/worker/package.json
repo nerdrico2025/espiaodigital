@@ -1,0 +1,27 @@
+{
+  "name": "@espiao/worker",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./pipeline": "./src/pipeline/run.ts",
+    "./interfaces": "./src/interfaces.ts",
+    "./mocks": "./src/mocks.ts"
+  },
+  "scripts": {
+    "dev": "tsx watch src/main.ts",
+    "start": "tsx src/main.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@espiao/shared": "*",
+    "@supabase/supabase-js": "2.45.4",
+    "zod": "3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "22.7.5",
+    "tsx": "4.19.2",
+    "typescript": "5.6.3"
+  }
+}

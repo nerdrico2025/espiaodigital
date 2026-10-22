@@ -1,0 +1,46 @@
+# Deploy via Easypanel (serviço do tipo Compose).
+# O proxy do Easypanel cuida do HTTPS automático (portas 80/443) e roteia por
+# domínio para o serviço `web` na porta interna 3000. Por isso NÃO há Caddy,
+# nem mapeamento de portas para o host. Defina as variáveis ${VAR} no painel
+# do Easypanel (Environment do serviço Compose).
+services:
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      args:
+        # NEXT_PUBLIC_* precisam entrar no bundle do Next no momento do BUILD.
+        NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
+        NEXT_PUBLIC_SUPABASE_ANON_KEY: ${NEXT_PUBLIC_SUPABASE_ANON_KEY}
+    restart: unless-stopped
+    environment:
+      NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: ${NEXT_PUBLIC_SUPABASE_ANON_KEY}
+      SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY}
+    # Porta interna; o proxy do Easypanel roteia o domínio até aqui.
+    expose:
+      - "3000"
+    networks: [espiao]
+
+  worker:
+    build:
+      context: .
+      dockerfile: apps/worker/Dockerfile
+    restart: unless-stopped
+    environment:
+      NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
+      SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY}
+      APIFY_TOKEN: ${APIFY_TOKEN}
+      EXA_API_KEY: ${EXA_API_KEY}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      APIFY_META_ADS_ACTOR: ${APIFY_META_ADS_ACTOR}
+      LLM_MODEL_ANALYSIS: ${LLM_MODEL_ANALYSIS}
+      LLM_MODEL_DISCOVERY: ${LLM_MODEL_DISCOVERY}
+      TRANSCRIPTION_PROVIDER: ${TRANSCRIPTION_PROVIDER}
+      TRANSCRIPTION_MODEL: ${TRANSCRIPTION_MODEL}
+    # O worker não expõe portas; só consome a fila no Postgres (Supabase).
+    networks: [espiao]
+
+networks:
+  espiao:
