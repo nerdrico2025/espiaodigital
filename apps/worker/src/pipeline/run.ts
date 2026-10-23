@@ -743,11 +743,20 @@ async function stepCapturarFunil(deps: Deps, ctx: Ctx): Promise<unknown> {
 
   let capturados = 0;
   let falhas = 0;
+  let capIndex = 0;
   const pixelIndex = await deps.db.getFunnelPixelIndex();
 
   for (const t of limited) {
     await ensureActive(deps, ctx.investigationId);
+    capIndex++;
     const domain = funnelDomain(t.url);
+    // Progresso visível na tela (polling lê o último job_event desta etapa).
+    await deps.db.addEvent(
+      ctx.investigationId,
+      'capturar_funil',
+      'rodando',
+      `Capturando página ${capIndex} de ${limited.length}${domain ? ` (${domain})` : ''}…`,
+    );
     const { id: funnelId } = await deps.db.insertFunnel({
       investigationId: ctx.investigationId,
       candidateId: t.candidateId,
@@ -865,9 +874,18 @@ async function stepProcessarVsl(deps: Deps, ctx: Ctx): Promise<unknown> {
   let processadas = 0;
   let falhas = 0;
   let longas = 0;
+  let vslIndex = 0;
 
   for (const t of list) {
     await ensureActive(deps, ctx.investigationId);
+    vslIndex++;
+    // Progresso visível na tela.
+    await deps.db.addEvent(
+      ctx.investigationId,
+      'processar_vsl',
+      'rodando',
+      `Baixando VSL ${vslIndex} de ${list.length}…`,
+    );
     const { id: vslId } = await deps.db.insertVsl({
       investigationId: ctx.investigationId,
       funnelId: t.funnelId,
@@ -919,18 +937,27 @@ async function stepProcessarVsl(deps: Deps, ctx: Ctx): Promise<unknown> {
       const missing: number[] = [];
       let provider: string | null = null;
       let partial = false;
+      let chIndex = 0;
       for (const ch of r.chunks) {
         // Cancelamento entre trechos: salva o parcial já transcrito e para.
         if (await deps.db.isCancelled(ctx.investigationId)) {
           partial = true;
           break;
         }
+        chIndex++;
         const chMin = ch.durationSec / 60;
         if (minuteBudget - chMin < 0) {
           partial = true;
           missing.push(ch.offsetSec);
           continue;
         }
+        // Progresso visível na tela.
+        await deps.db.addEvent(
+          ctx.investigationId,
+          'processar_vsl',
+          'rodando',
+          `Transcrevendo trecho ${chIndex} de ${r.chunks.length}…`,
+        );
         try {
           const tr = await deps.transcriber.transcribe({ audioPath: ch.path, durationSeconds: ch.durationSec });
           provider = tr.provider;

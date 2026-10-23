@@ -1,5 +1,5 @@
 import { STEP_ORDER, type StepName } from '@espiao/shared';
-import { stepLabel } from '@/lib/format';
+import { stepLabel, dateFmt } from '@/lib/format';
 import { RequeueButton } from './RequeueButton';
 
 type EventRow = { step: string; status: string; message: string | null; created_at: string };
@@ -65,7 +65,12 @@ export function StepBar({
                   </div>
                 )}
                 {st !== 'falhou' && lastEvent?.message && (
-                  <p className="text-xs text-gray-400">{lastEvent.message}</p>
+                  <p className="text-xs text-gray-400">
+                    {lastEvent.message}
+                    {st === 'rodando' && lastEvent.created_at && (
+                      <span className="text-gray-300"> · {dateFmt(lastEvent.created_at)}</span>
+                    )}
+                  </p>
                 )}
               </div>
             </li>

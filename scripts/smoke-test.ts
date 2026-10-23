@@ -313,13 +313,22 @@ async function main() {
   ];
 
   // ── Modo página: investigação ponta a ponta (mocks) ────────
+  // Passa pelo MESMO ponto de entrada da produção: o modo é lido do row bruto
+  // via mapInvestigationRow dentro de getInvestigation (sem injetar etapas).
   const pageInv = { id: 'inv_pg', query: 'https://pagina.com/vsl', country: 'BR', competitors: 1, onlyActive: true, mode: 'pagina' };
-  const { deps: dpg, db: dbpg } = makeMockDeps({ inv: pageInv as any, now });
+  const { deps: dpg, db: dbpg } = makeMockDeps({ inv: pageInv, now });
   await runInvestigation(dpg, 'inv_pg');
+  // Modo como o worker realmente o leu (pelo mapeador de linha), não o valor cru.
+  const pgMode = (await dbpg.getInvestigation()).mode;
+  // Contadores dos provedores de descoberta/ads: têm de ficar em ZERO no modo página.
+  const pgDiscoveryCalls = (dpg.discovery as any).calls as number;
+  const pgAdsCalls = (dpg.ads as any).calls as number;
   const pageModeChecks: [string, boolean][] = [
-    ['página: modo lido = pagina', parseInvestigationMode((dbpg.investigation as any).mode) === 'pagina'],
+    ['página: modo lido pelo mapeador = pagina', pgMode === 'pagina'],
     ['página: NÃO rodou descobrir nem buscar_ads',
       !dbpg.completed.includes('descobrir') && !dbpg.completed.includes('buscar_ads')],
+    ['página: EXA (descoberta) chamada 0 vezes', pgDiscoveryCalls === 0],
+    ['página: Apify (Ad Library) chamada 0 vezes', pgAdsCalls === 0],
     ['página: nenhum candidato criado (sem descoberta)', dbpg.candidates.size === 0],
     ['página: nenhum custo de EXA/Apify', !dbpg.costs.some((c) => c.provider === 'exa' || c.provider === 'apify')],
     ['página: rodou capturar_funil e processar_vsl',
@@ -332,7 +341,7 @@ async function main() {
   // ── Cancelamento (mocks) ───────────────────────────────────
   const { deps: dcx, db: dbcx } = makeMockDeps({ now });
   dbcx.cancelAtStep = 'descobrir'; // cancela ao entrar na etapa seguinte
-  await runInvestigation(dcx, (dbcx.investigation as any).id);
+  await runInvestigation(dcx, (dbcx.row as any).id);
   const cancelChecks: [string, boolean][] = [
     ['cancelada: status = cancelada', dbcx.status === 'cancelada'],
     ['cancelada: parou antes de buscar_ads', !dbcx.completed.includes('buscar_ads')],

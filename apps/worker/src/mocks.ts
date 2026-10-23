@@ -26,12 +26,17 @@ import type {
   Deps,
   Discovery,
   FunnelCapturer,
+  InvestigationRow,
   Logger,
   MediaPipeline,
   Transcriber,
   VslExtractor,
   VslExtractResult,
 } from './interfaces.js';
+// Usa o MESMO mapeador de linha da produção: assim o smoke lê o modo pelo
+// caminho real do worker. Se alguém reintroduzir o bug de achatar o modo,
+// o teste de modo página quebra junto com a produção.
+import { mapInvestigationRow } from './db/supabase-db.js';
 
 const DAY = 24 * 60 * 60 * 1000;
 let seq = 0;
@@ -44,7 +49,9 @@ interface CreativeState extends CreativeFull {
 }
 
 export class MemoryDb implements Db {
-  investigation: { id: string; query: string; country: string; competitors: number; onlyActive: boolean };
+  /** Linha BRUTA (snake_case), exatamente como o Supabase devolve. O modo é
+   *  lido só via mapInvestigationRow (igual à produção), nunca direto daqui. */
+  row: Record<string, any>;
   candidates = new Map<string, CandidateRow & Partial<CandidateScorePatch> & {
     summary?: string;
     hookPatterns?: string[];
@@ -66,12 +73,23 @@ export class MemoryDb implements Db {
     country: string;
     competitors: number;
     onlyActive: boolean;
+    mode?: string;
   }) {
-    this.investigation = inv;
+    // Monta a linha como o Postgres a entrega (snake_case), para o
+    // getInvestigation passar pelo MESMO mapeador que a produção usa.
+    this.row = {
+      id: inv.id,
+      query: inv.query,
+      country: inv.country,
+      competitors: inv.competitors,
+      only_active: inv.onlyActive,
+      config: null,
+      mode: inv.mode ?? 'concorrentes',
+    };
   }
 
-  async getInvestigation(): Promise<any> {
-    return this.investigation;
+  async getInvestigation(): Promise<InvestigationRow> {
+    return mapInvestigationRow(this.row);
   }
   async addEvent(_inv: string, step: StepName, status: any, message?: string, meta?: unknown) {
     this.events.push({ step, status, message, meta });
@@ -265,8 +283,11 @@ export class MemoryDb implements Db {
 
 // ── Mock providers ───────────────────────────────────────────
 export class MockDiscovery implements Discovery {
+  /** Quantas vezes discover() foi chamado (o smoke prova 0 no modo página). */
+  calls = 0;
   constructor(private count = 14) {}
   async discover(): Promise<{ candidates: Candidate[]; cost: CostEntry[] }> {
+    this.calls++;
     const candidates: Candidate[] = [];
     for (let i = 1; i <= this.count; i++) {
       candidates.push({
@@ -285,9 +306,12 @@ export class MockDiscovery implements Discovery {
 /** Gera ads determinísticos: os primeiros `strong` candidatos são escalados. */
 export class MockAdsProvider implements AdsProvider {
   private seen = 0;
+  /** Quantas vezes a Ad Library foi consultada (o smoke prova 0 no modo página). */
+  calls = 0;
   private byPage = new Map<string, NormalizedAd[]>();
   constructor(private strong = 3, private now = Date.now()) {}
   async fetchAds(candidate: Candidate): Promise<{ ads: NormalizedAd[]; cost: CostEntry[] }> {
+    this.calls++;
     const idx = this.seen++;
     const isStrong = idx < this.strong;
     const pageId = `pg-${candidate.id}`;
@@ -322,6 +346,7 @@ export class MockAdsProvider implements AdsProvider {
     return { ads, cost: [{ provider: 'apify', unit: 'ad', quantity: n, estimatedUsd: n * 0.0058 }] };
   }
   async fetchAdsByPage(pageId: string): Promise<{ ads: NormalizedAd[]; cost: CostEntry[] }> {
+    this.calls++;
     // Simula a busca por página devolvendo o mesmo conjunto da marca.
     const ads = this.byPage.get(pageId) ?? [];
     return {
@@ -493,7 +518,7 @@ export function makeMockDeps(opts?: {
   provider?: 'openrouter' | 'openai';
   now?: number;
   db?: MemoryDb;
-  inv?: { id: string; query: string; country: string; competitors: number; onlyActive: boolean };
+  inv?: { id: string; query: string; country: string; competitors: number; onlyActive: boolean; mode?: string };
 }): { deps: Deps; db: MemoryDb } {
   const now = opts?.now ?? Date.now();
   const inv =

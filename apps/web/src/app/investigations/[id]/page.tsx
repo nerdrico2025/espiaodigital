@@ -102,6 +102,20 @@ export default async function InvestigationDetail({ params }: { params: { id: st
   }
 
   const running = inv.status === 'rodando' || inv.status === 'pendente';
+
+  // Avisos de travamento: "Pendente" há muito (worker não pegou o job) ou
+  // "Rodando" sem nenhum evento novo há muito (sem atividade). Baseado em
+  // timestamps já existentes (job_events.created_at / investigations.created_at);
+  // não exige coluna nova.
+  const evs = (events ?? []) as { created_at: string }[];
+  const lastEventIso = evs.length ? evs[evs.length - 1]!.created_at : null;
+  const lastActivityIso = lastEventIso ?? inv.created_at;
+  const nowMs = Date.now();
+  const minsSince = (iso: string | null) =>
+    iso ? Math.floor((nowMs - new Date(iso).getTime()) / 60000) : 0;
+  const pendingTooLong = inv.status === 'pendente' && minsSince(inv.created_at) >= 2;
+  const runningStalled = inv.status === 'rodando' && minsSince(lastActivityIso) >= 5;
+
   const mode = parseInvestigationMode(inv.mode);
   const isAnunciante = mode === 'anunciante';
   const isPagina = mode === 'pagina';
@@ -184,6 +198,22 @@ export default async function InvestigationDetail({ params }: { params: { id: st
         <div className="mb-5 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
           ⚠️ {inv.notice}
         </div>
+      )}
+
+      {pendingTooLong && (
+        <div className="mb-5 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+          ⏳ Pendente há {minsSince(inv.created_at)} min — o worker ainda não pegou este trabalho.
+          Verifique se o worker está rodando.
+        </div>
+      )}
+      {runningStalled && (
+        <div className="mb-5 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+          ⏳ Rodando sem atividade há {minsSince(lastActivityIso)} min — pode estar travado.
+          A última atualização foi {dateFmt(lastActivityIso)}.
+        </div>
+      )}
+      {running && lastEventIso && !runningStalled && (
+        <p className="mb-5 text-xs text-gray-400">Última atividade: {dateFmt(lastActivityIso)}</p>
       )}
 
       <div className="grid grid-cols-1 gap-5 lg:grid-cols-[320px_1fr]">

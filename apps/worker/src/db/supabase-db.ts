@@ -1,4 +1,5 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
+import { parseInvestigationMode } from '@espiao/shared';
 import type {
   Candidate,
   CostEntry,
@@ -17,6 +18,25 @@ import type {
 
 const toTs = (ms: number | null) => (ms == null ? null : new Date(ms).toISOString());
 const toMs = (ts: string | null) => (ts == null ? null : Date.parse(ts));
+
+/**
+ * Mapeia a linha bruta da tabela `investigations` (snake_case) para InvestigationRow.
+ * É o ponto onde o worker LÊ o modo — por isso é uma função pura, exportada e
+ * coberta pelo smoke: se alguém voltar a achatar o modo aqui, o teste quebra.
+ */
+export function mapInvestigationRow(data: any): InvestigationRow {
+  return {
+    id: data.id,
+    query: data.query,
+    country: data.country,
+    competitors: data.competitors,
+    onlyActive: data.only_active,
+    config: data.config ?? null,
+    // Fonte única: parseInvestigationMode preserva os três modos (incl. 'pagina')
+    // e lança erro explícito em modo desconhecido — nunca cai no padrão calado.
+    mode: parseInvestigationMode(data.mode),
+  };
+}
 
 export interface ClaimedJob {
   id: string;
@@ -59,19 +79,11 @@ export class SupabaseDb implements Db {
   }
 
   async getInvestigation(id: string): Promise<InvestigationRow> {
-    const data = (await this.must(
+    const data = await this.must(
       await this.sb.from('investigations').select('*').eq('id', id).single(),
       'getInvestigation',
-    )) as any;
-    return {
-      id: data.id,
-      query: data.query,
-      country: data.country,
-      competitors: data.competitors,
-      onlyActive: data.only_active,
-      config: data.config ?? null,
-      mode: data.mode === 'anunciante' ? 'anunciante' : 'concorrentes',
-    };
+    );
+    return mapInvestigationRow(data);
   }
 
   async addEvent(
