@@ -103,6 +103,32 @@ export interface CandidateScore {
   evidence: EvidenceBreakdown;
 }
 
+/**
+ * Métricas de avaliação persistidas por candidato (coluna jsonb `metrics`).
+ * Alimentam a seção "Candidatos avaliados" na tela e nas exportações, para
+ * explicar em PT simples por que cada um foi ou não selecionado.
+ */
+export interface CandidateMetrics extends EvidenceBreakdown {
+  /** Anúncios PRÓPRIOS coletados (base de pontuação). */
+  adsCollected: number;
+  /** Nenhum anúncio próprio encontrado (só menções de terceiros). */
+  noOwnAds: boolean;
+  /** Limite de anúncios por candidato usado nesta investigação. */
+  adsPerCandidateLimit: number;
+}
+
+export type CandidateStatus = 'selecionado' | 'quase' | 'nao';
+
+export interface CandidateVerdict {
+  status: CandidateStatus;
+  /** Rótulo em PT: "Selecionado" | "Quase lá" | "Não selecionado". */
+  label: string;
+  /** Motivo em PT simples (ex.: "só 12 dias no ar", "apenas 2 variações"). */
+  reason: string;
+  /** true quando a amostra foi pequena (coletados ≤ limite) → dica na tela. */
+  smallSample: boolean;
+}
+
 export type MediaType = 'image' | 'video';
 
 export interface CreativeAnalysis {

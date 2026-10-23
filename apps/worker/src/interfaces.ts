@@ -3,6 +3,7 @@
 
 import type {
   Candidate,
+  CandidateMetrics,
   CostEntry,
   CreativeAnalysis,
   EvidenceBreakdown,
@@ -68,6 +69,8 @@ export interface CandidateScorePatch {
   evidence: EvidenceBreakdown;
   selected: boolean;
   selectionReason: string | null;
+  /** Métricas de avaliação (persistidas na coluna jsonb `metrics`). */
+  metrics?: CandidateMetrics;
 }
 
 export interface Db {

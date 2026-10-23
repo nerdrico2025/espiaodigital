@@ -40,6 +40,15 @@ export const EVIDENCE_LEVEL_CUTOFFS = {
   medio: 7,
 };
 
+/**
+ * Limiar "Quase lá": evidência média que NÃO é selecionada nem baixa mídia,
+ * só aparece rotulada na seção "Candidatos avaliados".
+ */
+export const NEARLY_THRESHOLDS = {
+  minDays: 14,
+  minVariations: 2,
+};
+
 /** CTAs considerados "de ação". Normalizados (lowercase, sem acento). */
 export const ACTION_CTAS = [
   'saiba mais',

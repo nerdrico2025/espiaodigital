@@ -1,3 +1,4 @@
+import { classifyCandidate, type CandidateMetrics } from '@espiao/shared';
 import { createClient } from '@/lib/supabase/server';
 
 export const dynamic = 'force-dynamic';
@@ -17,13 +18,24 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
     .eq('selected', true)
     .order('score', { ascending: false });
 
+  const { data: allCandidates } = await supabase
+    .from('candidates')
+    .select('*')
+    .eq('investigation_id', params.id)
+    .order('score', { ascending: false });
+
   const { data: creatives } = await supabase
     .from('creatives')
     .select('*')
     .eq('investigation_id', params.id);
 
   const cands = candidates ?? [];
+  const evaluated = allCandidates ?? [];
   const crs = creatives ?? [];
+
+  // `evidence` como base (dados antigos) + `metrics` por cima.
+  const metricsOf = (c: any): Partial<CandidateMetrics> =>
+    ({ ...(c.evidence ?? {}), ...(c.metrics ?? {}) }) as Partial<CandidateMetrics>;
 
   if (format === 'csv') {
     const header = [
@@ -46,6 +58,27 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
         );
       }
     }
+
+    // Seção "Candidatos avaliados" (todos, mesmo com 0 selecionados).
+    lines.push('');
+    lines.push('# Candidatos avaliados');
+    lines.push(
+      [
+        'concorrente', 'dominio', 'anuncios_coletados', 'dias', 'variacoes',
+        'plataformas', 'paises', 'score', 'status', 'motivo',
+      ].join(','),
+    );
+    for (const c of evaluated) {
+      const m = metricsOf(c);
+      const v = classifyCandidate(m, c.selected);
+      lines.push(
+        csvRow([
+          c.name, c.domain, m.adsCollected ?? '', m.daysLive ?? '', m.maxVariations ?? '',
+          m.distinctPlatforms ?? '', m.distinctCountries ?? '', c.score, v.label, v.reason,
+        ]),
+      );
+    }
+
     return new Response(lines.join('\n'), {
       headers: {
         'Content-Type': 'text/csv; charset=utf-8',
@@ -61,6 +94,21 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
   md.push(`Custo final estimado: US$ ${Number(inv.final_cost_usd ?? 0).toFixed(4)}`);
   if (inv.notice) md.push(`\n> ⚠️ ${inv.notice}`);
 
+  // Seção "Candidatos avaliados" (todos, mesmo com 0 selecionados).
+  md.push(`\n## Candidatos avaliados (${evaluated.length})`);
+  md.push('| Concorrente | Anúncios | Dias | Variações | Plat. | Países | Score | Status | Motivo |');
+  md.push('|---|---|---|---|---|---|---|---|---|');
+  for (const c of evaluated) {
+    const m = metricsOf(c);
+    const v = classifyCandidate(m, c.selected);
+    md.push(
+      `| ${c.name}${c.domain ? ` (${c.domain})` : ''} | ${m.adsCollected ?? '—'} | ${m.daysLive ?? '—'} | ` +
+        `${m.maxVariations ?? '—'} | ${m.distinctPlatforms ?? '—'} | ${m.distinctCountries ?? '—'} | ` +
+        `${c.score} | ${v.label} | ${v.reason} |`,
+    );
+  }
+
+  if (cands.length > 0) md.push(`\n## Concorrentes selecionados`);
   for (const c of cands) {
     md.push(`\n## ${c.name}${c.domain ? ` (${c.domain})` : ''}`);
     md.push(`- Score: **${c.score}** · Evidência: **${c.evidence_level}**`);

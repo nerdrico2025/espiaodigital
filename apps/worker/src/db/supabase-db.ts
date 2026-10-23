@@ -157,17 +157,17 @@ export class SupabaseDb implements Db {
   });
 
   async updateCandidateScore(candidateId: string, patch: CandidateScorePatch): Promise<void> {
-    const { error } = await this.sb
-      .from('candidates')
-      .update({
-        score: patch.score,
-        evidence_level: patch.level,
-        reasons: patch.reasons,
-        evidence: patch.evidence,
-        selected: patch.selected,
-        selection_reason: patch.selectionReason,
-      })
-      .eq('id', candidateId);
+    const upd: Record<string, unknown> = {
+      score: patch.score,
+      evidence_level: patch.level,
+      reasons: patch.reasons,
+      evidence: patch.evidence,
+      selected: patch.selected,
+      selection_reason: patch.selectionReason,
+    };
+    // Só grava `metrics` quando informado (o 2º update de seleção não reescreve).
+    if (patch.metrics !== undefined) upd.metrics = patch.metrics;
+    const { error } = await this.sb.from('candidates').update(upd).eq('id', candidateId);
     if (error) throw new Error(`updateCandidateScore: ${error.message}`);
   }
 

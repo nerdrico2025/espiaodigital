@@ -255,8 +255,9 @@ async function stepPontuar(deps: Deps, ctx: Ctx): Promise<unknown> {
     return { candidate: g.candidate, ads: g.ads, score: scoreCandidate(ads, now) };
   });
 
-  // Persiste score de TODOS (selected=false por ora).
+  // Persiste score + métricas de avaliação de TODOS (selected=false por ora).
   for (const r of ranked) {
+    const adsCollected = r.ads.length;
     await deps.db.updateCandidateScore(r.candidate.id, {
       score: r.score.score,
       level: r.score.level,
@@ -264,6 +265,12 @@ async function stepPontuar(deps: Deps, ctx: Ctx): Promise<unknown> {
       evidence: r.score.evidence,
       selected: false,
       selectionReason: null,
+      metrics: {
+        ...r.score.evidence,
+        adsCollected,
+        noOwnAds: adsCollected === 0,
+        adsPerCandidateLimit: ctx.limits.adsPerCandidate,
+      },
     });
   }
 

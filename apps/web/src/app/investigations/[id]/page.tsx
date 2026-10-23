@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
+import { classifyCandidate, type CandidateMetrics, type CandidateStatus } from '@espiao/shared';
 import { createClient } from '@/lib/supabase/server';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { STATUS_PT, STATUS_STYLE, EVIDENCE_PT, usdFmt, dateFmt } from '@/lib/format';
@@ -18,20 +19,37 @@ export default async function InvestigationDetail({ params }: { params: { id: st
     .maybeSingle();
   if (!inv) notFound();
 
-  const [{ data: job }, { data: events }, { data: candidates }, { data: creatives }] = await Promise.all([
-    supabase.from('jobs').select('*').eq('investigation_id', params.id).maybeSingle(),
-    supabase.from('job_events').select('*').eq('investigation_id', params.id).order('created_at'),
-    supabase
-      .from('candidates')
-      .select('*')
-      .eq('investigation_id', params.id)
-      .eq('selected', true)
-      .order('score', { ascending: false }),
-    supabase.from('creatives').select('*').eq('investigation_id', params.id),
-  ]);
+  const [{ data: job }, { data: events }, { data: candidates }, { data: allCandidates }, { data: creatives }] =
+    await Promise.all([
+      supabase.from('jobs').select('*').eq('investigation_id', params.id).maybeSingle(),
+      supabase.from('job_events').select('*').eq('investigation_id', params.id).order('created_at'),
+      supabase
+        .from('candidates')
+        .select('*')
+        .eq('investigation_id', params.id)
+        .eq('selected', true)
+        .order('score', { ascending: false }),
+      supabase
+        .from('candidates')
+        .select('*')
+        .eq('investigation_id', params.id)
+        .order('score', { ascending: false }),
+      supabase.from('creatives').select('*').eq('investigation_id', params.id),
+    ]);
 
   const cands = candidates ?? [];
+  const evaluated = allCandidates ?? [];
   const crs = creatives ?? [];
+
+  // Métricas efetivas por candidato: `evidence` como base (investigações
+  // anteriores à coluna `metrics`) + `metrics` por cima (adsCollected etc.).
+  const metricsOf = (c: any): Partial<CandidateMetrics> =>
+    ({ ...(c.evidence ?? {}), ...(c.metrics ?? {}) }) as Partial<CandidateMetrics>;
+
+  // Dica de amostra pequena: algum candidato não selecionado coletou ≤ o limite.
+  const showSampleTip = evaluated.some(
+    (c) => !c.selected && classifyCandidate(metricsOf(c), c.selected).smallSample,
+  );
 
   // URLs assinadas para a mídia privada (via service role, server-side).
   const admin = createAdminClient();
@@ -106,6 +124,73 @@ export default async function InvestigationDetail({ params }: { params: { id: st
         />
 
         <div className="space-y-5">
+          {/* Candidatos avaliados — sempre visível, mesmo com 0 selecionados. */}
+          <div className="card">
+            <h2 className="mb-1 text-lg font-semibold">Candidatos avaliados ({evaluated.length})</h2>
+            <p className="mb-3 text-xs text-gray-500">
+              Todos os candidatos analisados e o porquê de cada um. Só os “Selecionado” recebem
+              download e transcrição; “Quase lá” é evidência média e não entra na contagem.
+            </p>
+
+            {showSampleTip && (
+              <div className="mb-3 rounded-lg border border-sky-200 bg-sky-50 p-3 text-xs text-sky-800">
+                💡 Alguns candidatos tiveram <strong>poucos anúncios coletados</strong> (≤ o limite por
+                candidato). Em <em>Opções avançadas</em>, aumente <strong>“Anúncios por candidato”</strong>{' '}
+                para coletar uma amostra maior e revelar mais evidência.
+              </div>
+            )}
+
+            {evaluated.length === 0 ? (
+              <p className="text-sm text-gray-500">
+                {running
+                  ? 'Processando… a avaliação aparece ao final da pontuação.'
+                  : 'Nenhum candidato foi avaliado.'}
+              </p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-sm">
+                  <thead>
+                    <tr className="border-b border-gray-200 text-xs text-gray-500">
+                      <th className="py-2 pr-3">Concorrente</th>
+                      <th className="px-2">Anúncios</th>
+                      <th className="px-2">Dias</th>
+                      <th className="px-2">Variações</th>
+                      <th className="px-2">Plat.</th>
+                      <th className="px-2">Países</th>
+                      <th className="px-2">Score</th>
+                      <th className="px-2">Status</th>
+                      <th className="px-2">Motivo</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {evaluated.map((c) => {
+                      const m = metricsOf(c);
+                      const v = classifyCandidate(m, c.selected);
+                      return (
+                        <tr key={c.id} className="border-b border-gray-100 align-top">
+                          <td className="py-2 pr-3">
+                            <div className="font-medium">{c.name}</div>
+                            {c.domain && <div className="text-xs text-gray-400">{c.domain}</div>}
+                          </td>
+                          <td className="px-2 tabular-nums">{m.adsCollected ?? '—'}</td>
+                          <td className="px-2 tabular-nums">{m.daysLive ?? '—'}</td>
+                          <td className="px-2 tabular-nums">{m.maxVariations ?? '—'}</td>
+                          <td className="px-2 tabular-nums">{m.distinctPlatforms ?? '—'}</td>
+                          <td className="px-2 tabular-nums">{m.distinctCountries ?? '—'}</td>
+                          <td className="px-2 tabular-nums">{c.score}</td>
+                          <td className="px-2">
+                            <StatusBadge status={v.status} label={v.label} />
+                          </td>
+                          <td className="px-2 text-xs text-gray-600">{v.reason}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+
           {cands.length === 0 ? (
             <div className="card text-sm text-gray-500">
               {running
@@ -197,6 +282,15 @@ export default async function InvestigationDetail({ params }: { params: { id: st
       </div>
     </div>
   );
+}
+
+function StatusBadge({ status, label }: { status: CandidateStatus; label: string }) {
+  const style: Record<CandidateStatus, string> = {
+    selecionado: 'bg-green-100 text-green-800',
+    quase: 'bg-amber-100 text-amber-800',
+    nao: 'bg-gray-100 text-gray-600',
+  };
+  return <span className={`badge whitespace-nowrap ${style[status]}`}>{label}</span>;
 }
 
 function Evi({ label, value }: { label: string; value: unknown }) {

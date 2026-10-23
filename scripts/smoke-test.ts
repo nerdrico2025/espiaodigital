@@ -21,7 +21,7 @@ import { RealTranscriber } from '../apps/worker/src/providers/transcriber.js';
 import { RealMedia, type Uploader } from '../apps/worker/src/providers/media.js';
 import { filterOwnAds, mostFrequentPageId, adPageId } from '../apps/worker/src/pipeline/normalize.js';
 import { normalizeClaimedJob } from '../apps/worker/src/db/supabase-db.js';
-import { resolveLimits, clampInvestigationConfig, DEFAULT_LIMITS } from '@espiao/shared';
+import { resolveLimits, clampInvestigationConfig, DEFAULT_LIMITS, classifyCandidate } from '@espiao/shared';
 
 const line = '─'.repeat(60);
 
@@ -172,10 +172,33 @@ async function main() {
     ['clamp mantém campo válido (maxTranscriptionMinutes)', clamped.maxTranscriptionMinutes === 15],
   ];
 
+  // ── Classificação de candidatos (Candidatos avaliados) ─────
+  const base = {
+    distinctPlatforms: 1,
+    distinctCountries: 1,
+    hasVideo: false,
+    hasActionCta: false,
+    adsPerCandidateLimit: 30,
+  };
+  const vSel = classifyCandidate({ ...base, adsCollected: 40, daysLive: 90, maxVariations: 6, noOwnAds: false }, true);
+  const vQuase = classifyCandidate({ ...base, adsCollected: 20, daysLive: 20, maxVariations: 2, noOwnAds: false }, false);
+  const vNovo = classifyCandidate({ ...base, adsCollected: 20, daysLive: 5, maxVariations: 1, noOwnAds: false }, false);
+  const vSemAnuncios = classifyCandidate({ ...base, adsCollected: 0, daysLive: null, maxVariations: 0, noOwnAds: true }, false);
+  const classifyChecks: [string, boolean][] = [
+    ['selecionado → status selecionado', vSel.status === 'selecionado'],
+    ['20 dias e 2 variações → Quase lá', vQuase.status === 'quase' && vQuase.label === 'Quase lá'],
+    ['5 dias → Não selecionado com motivo "só 5 dias"', vNovo.status === 'nao' && vNovo.reason.includes('5 dias')],
+    ['apenas 1 variação citada no motivo', vNovo.reason.includes('1 variação')],
+    ['sem anúncios próprios → motivo correto', vSemAnuncios.reason === 'nenhum anúncio próprio encontrado'],
+    ['amostra pequena sinalizada (20 ≤ 30)', vQuase.smallSample === true],
+    ['amostra pequena não dispara sem anúncios', vSemAnuncios.smallSample === false],
+  ];
+
   // ── Verificações (assert) ──────────────────────────────────
   const checks: [string, boolean][] = [
     ...queueChecks,
     ...configChecks,
+    ...classifyChecks,
     ['investigação concluída', db.status === 'concluida'],
     ['selecionou exatamente 2 concorrentes', selected.length === 2],
     ['pelo menos 1 vídeo transcrito', transcribed.length >= 1],

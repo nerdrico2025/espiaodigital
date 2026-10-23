@@ -1,11 +1,14 @@
 import {
   ACTION_CTAS,
   EVIDENCE_LEVEL_CUTOFFS,
+  NEARLY_THRESHOLDS,
   SCORING_THRESHOLDS,
   SCORING_WEIGHTS,
 } from './config';
 import type {
+  CandidateMetrics,
   CandidateScore,
+  CandidateVerdict,
   EvidenceBreakdown,
   EvidenceLevel,
   NormalizedAd,
@@ -123,6 +126,72 @@ export function scoreCandidate(ads: NormalizedAd[], now = Date.now()): Candidate
     ev.maxVariations >= t.strongMinVariations;
 
   return { score, reasons, level: levelForScore(score), passesStrong, evidence: ev };
+}
+
+/**
+ * Classifica um candidato para a seção "Candidatos avaliados" (tela/export).
+ * - "Selecionado": já marcado selected=true (evidência forte dentro do pedido).
+ * - "Quase lá": NÃO selecionado, mas com evidência média (14+ dias E 2+ variações).
+ * - "Não selecionado": o restante.
+ * Tolera métricas ausentes (investigações antigas sem a coluna `metrics`):
+ * campos numéricos indefinidos não disparam "amostra pequena" nem "sem anúncios".
+ */
+export function classifyCandidate(
+  m: Partial<CandidateMetrics>,
+  selected: boolean,
+): CandidateVerdict {
+  const t = SCORING_THRESHOLDS;
+  const n = NEARLY_THRESHOLDS;
+  const adsCollected = m.adsCollected;
+  const days = m.daysLive ?? null;
+  const variations = m.maxVariations ?? 0;
+  const limit = m.adsPerCandidateLimit ?? 0;
+
+  // Sem anúncios próprios: só sabemos quando a métrica foi persistida.
+  if (m.noOwnAds === true || adsCollected === 0) {
+    return {
+      status: 'nao',
+      label: 'Não selecionado',
+      reason: 'nenhum anúncio próprio encontrado',
+      smallSample: false,
+    };
+  }
+
+  // Amostra pequena: coletou algo, porém ≤ o limite por candidato.
+  const smallSample =
+    limit > 0 && typeof adsCollected === 'number' && adsCollected > 0 && adsCollected <= limit;
+
+  if (selected) {
+    const parts: string[] = [];
+    if (days != null) parts.push(`${days} dia${days === 1 ? '' : 's'} no ar`);
+    parts.push(`${variations} variaç${variations === 1 ? 'ão' : 'ões'}`);
+    return {
+      status: 'selecionado',
+      label: 'Selecionado',
+      reason: `evidência forte: ${parts.join(' e ')}`,
+      smallSample: false,
+    };
+  }
+
+  // Motivos de não atingir evidência forte (30+ dias E 3+ variações).
+  const faltas: string[] = [];
+  if (days == null) faltas.push('sem data de veiculação');
+  else if (days < t.strongMinDays) faltas.push(`só ${days} dia${days === 1 ? '' : 's'} no ar`);
+  if (variations < t.strongMinVariations)
+    faltas.push(`apenas ${variations} variaç${variations === 1 ? 'ão' : 'ões'}`);
+
+  let reason = faltas.join(' e ') || 'evidência insuficiente';
+  if (smallSample) {
+    reason += `; amostra pequena: só ${adsCollected} anúncio${adsCollected === 1 ? '' : 's'} coletado${adsCollected === 1 ? '' : 's'}`;
+  }
+
+  const nearly = days != null && days >= n.minDays && variations >= n.minVariations;
+  return {
+    status: nearly ? 'quase' : 'nao',
+    label: nearly ? 'Quase lá' : 'Não selecionado',
+    reason,
+    smallSample,
+  };
 }
 
 export interface RankedCandidate<T> {
