@@ -4,43 +4,117 @@ import type {
   CreativeAnalysis,
   FunnelStepAnalysis,
   VslAnalysis,
+  VslBlock,
   VslSegment,
+  VslSummary,
 } from '@espiao/shared';
 import { PRICE_REFERENCE, VSL_BLOCKS } from '@espiao/shared';
 import type { Analyzer } from '../interfaces.js';
 import { openRouterChat, parseJsonLoose, type ChatMessage } from './openrouter.js';
 
-const vslSchema = z.object({
-  resumo: z.object({
-    bigIdea: z.string().nullable(),
-    mecanismo: z.string().nullable(),
-    oferta: z.string().nullable(),
-    preco: z.string().nullable(),
-    stack: z
-      .object({
-        itens: z.array(z.string()).default([]),
-        bonus: z.array(z.string()).default([]),
-        valorAlegado: z.string().nullable(),
-      })
-      .nullable(),
-    garantia: z.string().nullable(),
-    emocaoDominante: z.string().nullable(),
-    vilao: z.string().nullable(),
-    diferencial: z.string().nullable(),
-  }),
-  blocos: z.array(
-    z.object({
-      bloco: z.string(),
-      nome: z.string().nullable().optional(),
-      presente: z.boolean(),
-      inicio: z.string().nullable(),
-      fim: z.string().nullable(),
-      citacoes: z.array(z.string()).default([]),
-      analise: z.string().nullable(),
-      nota: z.number().nullable(),
-    }),
-  ),
-});
+// ── Salvamento tolerante do mapeamento de VSL ────────────────
+// O modelo às vezes devolve um campo fora do formato (nota como string, bloco
+// como número, resumo faltando uma chave). Em vez de um zod all-or-nothing que
+// jogava TODA a análise fora, aproveitamos campo a campo.
+function asStr(v: unknown): string | null {
+  if (typeof v === 'string') return v.trim() || null;
+  if (typeof v === 'number' && isFinite(v)) return String(v);
+  return null;
+}
+function asNum(v: unknown): number | null {
+  if (typeof v === 'number' && isFinite(v)) return v;
+  if (typeof v === 'string' && v.trim() && !Number.isNaN(Number(v))) return Number(v);
+  return null;
+}
+function asBool(v: unknown): boolean {
+  return v === true || v === 'true' || v === 1 || v === '1';
+}
+function asStrArray(v: unknown): string[] {
+  if (!Array.isArray(v)) return [];
+  return v.map((x) => asStr(x)).filter((x): x is string => !!x);
+}
+/** Normaliza a chave do bloco ("1", "bloco 01", 1) para "01".."11". */
+function normBlocoKey(v: unknown): string {
+  const m = String(v ?? '').match(/\d+/);
+  return m ? m[0].padStart(2, '0') : '';
+}
+
+/**
+ * Constrói a VslAnalysis a partir do JSON (possivelmente torto) do modelo.
+ * - Resumo e blocos são aproveitados campo a campo.
+ * - Citação que NÃO existe na transcrição é removida; o bloco permanece.
+ * - mapeamentoOk = true se há qualquer conteúdo útil (resumo ou bloco presente).
+ * Exportada para o smoke exercitar o validador sem rede.
+ */
+export function buildVslAnalysis(
+  raw: unknown,
+  transcription: string,
+  opts: { parcial: boolean; ctaInfo?: { cta: string; aparecemSeg: number | null }[] | null },
+): { analysis: VslAnalysis; mapeamentoOk: boolean; mapeamentoMotivo: string | null } {
+  const lower = (transcription ?? '').toLowerCase();
+  const obj = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : null;
+  const rawResumo = (obj?.resumo && typeof obj.resumo === 'object' ? (obj.resumo as Record<string, unknown>) : {}) as Record<string, unknown>;
+  const rawStack = rawResumo.stack && typeof rawResumo.stack === 'object' ? (rawResumo.stack as Record<string, unknown>) : null;
+
+  const resumo: VslSummary = {
+    bigIdea: asStr(rawResumo.bigIdea),
+    mecanismo: asStr(rawResumo.mecanismo),
+    oferta: asStr(rawResumo.oferta),
+    preco: asStr(rawResumo.preco),
+    stack: rawStack
+      ? { itens: asStrArray(rawStack.itens), bonus: asStrArray(rawStack.bonus), valorAlegado: asStr(rawStack.valorAlegado) }
+      : null,
+    garantia: asStr(rawResumo.garantia),
+    emocaoDominante: asStr(rawResumo.emocaoDominante),
+    vilao: asStr(rawResumo.vilao),
+    diferencial: asStr(rawResumo.diferencial),
+  };
+
+  const rawBlocos = Array.isArray(obj?.blocos) ? (obj!.blocos as unknown[]) : [];
+  const byKey = new Map<string, Record<string, unknown>>();
+  for (const b of rawBlocos) {
+    if (b && typeof b === 'object') byKey.set(normBlocoKey((b as any).bloco), b as Record<string, unknown>);
+  }
+  const blocos: VslBlock[] = VSL_BLOCKS.map((def) => {
+    const b = byKey.get(def.key);
+    // Mantém só citações que EXISTEM na transcrição — sem derrubar o bloco.
+    const citacoes = asStrArray(b?.citacoes)
+      .filter((c) => lower.includes(c.toLowerCase().slice(0, 40)))
+      .slice(0, 3);
+    return {
+      bloco: def.key,
+      nome: def.nome,
+      presente: asBool(b?.presente),
+      inicio: asStr(b?.inicio),
+      fim: asStr(b?.fim),
+      citacoes,
+      analise: asStr(b?.analise),
+      nota: asNum(b?.nota),
+    };
+  });
+
+  const temResumo = [
+    resumo.bigIdea, resumo.mecanismo, resumo.oferta, resumo.preco,
+    resumo.garantia, resumo.emocaoDominante, resumo.vilao, resumo.diferencial,
+  ].some(Boolean);
+  const temBloco = blocos.some((b) => b.presente || b.analise);
+  const mapeamentoOk = temResumo || temBloco;
+  const mapeamentoMotivo = mapeamentoOk
+    ? null
+    : obj
+      ? 'o modelo não retornou resumo nem blocos preenchidos'
+      : 'resposta do modelo não era JSON válido';
+
+  const analysis: VslAnalysis = {
+    resumo,
+    blocos,
+    ctaButtons: opts.ctaInfo ?? null,
+    parcialAviso: opts.parcial
+      ? 'Transcrição parcial: alguns trechos falharam; a análise pode estar incompleta.'
+      : null,
+  };
+  return { analysis, mapeamentoOk, mapeamentoMotivo };
+}
 
 const funnelStepSchema = z.object({
   tipo: z
@@ -203,7 +277,7 @@ export class LlmAnalyzer implements Analyzer {
     segments: VslSegment[];
     parcial: boolean;
     ctaInfo?: { cta: string; aparecemSeg: number | null }[] | null;
-  }): Promise<{ analysis: VslAnalysis; cost: CostEntry[] }> {
+  }): Promise<{ analysis: VslAnalysis; cost: CostEntry[]; mapeamentoOk: boolean; mapeamentoMotivo: string | null }> {
     const blocosList = VSL_BLOCKS.map((b) => `${b.key} ${b.nome}`).join('; ');
     const system =
       `Você mapeia uma VSL (video sales letter) em 11 blocos: ${blocosList}. ` +
@@ -225,52 +299,13 @@ export class LlmAnalyzer implements Analyzer {
       ],
     });
 
-    const safe = vslSchema.safeParse(parseJsonLoose(out));
-    const nomeByKey = new Map(VSL_BLOCKS.map((b) => [b.key, b.nome]));
-    let analysis: VslAnalysis;
-    if (safe.success) {
-      // Garante os 11 blocos e remove citações que não existem na transcrição.
-      const lower = input.transcription.toLowerCase();
-      const byKey = new Map(safe.data.blocos.map((b) => [b.bloco, b]));
-      const blocos = VSL_BLOCKS.map((def) => {
-        const b = byKey.get(def.key);
-        const citacoes = (b?.citacoes ?? [])
-          .filter((c) => c && lower.includes(c.toLowerCase().slice(0, 40)))
-          .slice(0, 3);
-        return {
-          bloco: def.key,
-          nome: def.nome,
-          presente: b?.presente ?? false,
-          inicio: b?.inicio ?? null,
-          fim: b?.fim ?? null,
-          citacoes,
-          analise: b?.analise ?? null,
-          nota: b?.nota ?? null,
-        };
-      });
-      analysis = {
-        resumo: safe.data.resumo,
-        blocos,
-        ctaButtons: input.ctaInfo ?? null,
-        parcialAviso: input.parcial
-          ? 'Transcrição parcial: alguns trechos falharam; a análise pode estar incompleta.'
-          : null,
-      };
-    } else {
-      analysis = {
-        resumo: {
-          bigIdea: null, mecanismo: null, oferta: null, preco: null, stack: null,
-          garantia: null, emocaoDominante: null, vilao: null, diferencial: null,
-        },
-        blocos: VSL_BLOCKS.map((d) => ({
-          bloco: d.key, nome: d.nome, presente: false, inicio: null, fim: null,
-          citacoes: [], analise: null, nota: null,
-        })),
-        ctaButtons: input.ctaInfo ?? null,
-        parcialAviso: input.parcial ? 'Transcrição parcial.' : null,
-      };
-    }
-    void nomeByKey;
+    // Salvamento TOLERANTE: nunca descarta tudo por um campo fora do formato.
+    // Aproveita resumo e blocos campo a campo; citação inexistente some sozinha,
+    // sem levar o bloco junto.
+    const built = buildVslAnalysis(parseJsonLoose(out), input.transcription, {
+      parcial: input.parcial,
+      ctaInfo: input.ctaInfo ?? null,
+    });
     const cost: CostEntry[] = [
       {
         provider: 'openrouter',
@@ -280,7 +315,7 @@ export class LlmAnalyzer implements Analyzer {
         note: this.cfg.model,
       },
     ];
-    return { analysis, cost };
+    return { analysis: built.analysis, cost, mapeamentoOk: built.mapeamentoOk, mapeamentoMotivo: built.mapeamentoMotivo };
   }
 
   async analyzeFunnelStep(input: {

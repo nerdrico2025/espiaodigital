@@ -20,6 +20,7 @@ import {
   type RequestLog,
   type StepName,
   type VslSegment,
+  type VslSubstep,
 } from '@espiao/shared';
 import type { AdRow, CandidateRow, Deps } from '../interfaces.js';
 import { filterOwnAds, mostFrequentPageId } from './normalize.js';
@@ -863,37 +864,88 @@ async function stepCapturarFunil(deps: Deps, ctx: Ctx): Promise<unknown> {
   const total = await deps.db.getCostTotal(ctx.investigationId);
   await deps.db.setFinalCost(ctx.investigationId, round(total));
 
+  // Modo página sem nenhuma página capturada → "Concluída sem resultado" (a tela
+  // mostra em amarelo, nunca verde). A notice persiste até o fim da investigação.
+  if (ctx.mode === 'pagina' && capturados === 0) {
+    await deps.db.setInvestigationStatus(ctx.investigationId, 'rodando', {
+      notice:
+        'Nenhuma página do funil foi capturada — a URL pode ter bloqueado o acesso ou não respondeu. ' +
+        'Não há o que analisar; tente outra URL ou refaça a captura.',
+    });
+  }
+
   return { funis: limited.length, capturados, falhas };
 }
 
 // ── 10. Processar VSL (download + transcrição + mapeamento) ──
+// Idempotente: se a VSL já tem transcrição salva (ex.: "refazer só o mapeamento"),
+// reaproveita a transcrição e roda SÓ o mapeamento — sem baixar nem transcrever.
 async function stepProcessarVsl(deps: Deps, ctx: Ctx): Promise<unknown> {
   const targets = await deps.db.getVslTargets(ctx.investigationId);
   const list = targets.slice(0, ctx.limits.vslPerInvestigation);
+
+  // VSLs já gravadas, indexadas por destino, para reaproveitar transcrição.
+  const existing = await deps.db.getVsls(ctx.investigationId);
+  const prevByDest = new Map<string, (typeof existing)[number]>();
+  for (const v of existing) {
+    const k = v.sourceUrl ? funnelDestKey(v.sourceUrl) : null;
+    if (k && !prevByDest.has(k)) prevByDest.set(k, v);
+  }
+
   let minuteBudget = ctx.limits.vslTranscribedMinutes;
   let processadas = 0;
+  let comProblemas = 0;
   let falhas = 0;
   let longas = 0;
+  let remapeadas = 0;
   let vslIndex = 0;
 
   for (const t of list) {
     await ensureActive(deps, ctx.investigationId);
     vslIndex++;
-    // Progresso visível na tela.
+    const prev = prevByDest.get(funnelDestKey(t.url) ?? '');
+
+    // ── Caminho "refazer só o mapeamento" ──────────────────────
+    // Transcrição já existe: não baixa nem transcreve de novo.
+    if (prev?.transcription && prev.transcription.trim()) {
+      await deps.db.addEvent(
+        ctx.investigationId,
+        'processar_vsl',
+        'rodando',
+        `Refazendo o mapeamento da VSL ${vslIndex} de ${list.length} (reaproveitando a transcrição)…`,
+      );
+      const st = await remapVsl(deps, ctx, prev.id, prev.transcription, prev.segments, prev.partial);
+      remapeadas++;
+      if (st === 'concluida') processadas++;
+      else comProblemas++;
+      await sleep(300);
+      continue;
+    }
+
+    // ── Fluxo completo: download → áudio → transcrição → mapeamento ──
     await deps.db.addEvent(
       ctx.investigationId,
       'processar_vsl',
       'rodando',
       `Baixando VSL ${vslIndex} de ${list.length}…`,
     );
-    const { id: vslId } = await deps.db.insertVsl({
-      investigationId: ctx.investigationId,
-      funnelId: t.funnelId,
-      funnelStepId: t.funnelStepId,
-      sourceUrl: t.url,
-      player: t.player,
-      manifestUrl: t.manifestUrl,
-    });
+    const vslId =
+      prev?.id ??
+      (
+        await deps.db.insertVsl({
+          investigationId: ctx.investigationId,
+          funnelId: t.funnelId,
+          funnelStepId: t.funnelStepId,
+          sourceUrl: t.url,
+          player: t.player,
+          manifestUrl: t.manifestUrl,
+        })
+      ).id;
+
+    // Sub-etapas: cada uma com ok/falhou + motivo legível (mostradas na tela).
+    const substeps: VslSubstep[] = [];
+    const sub = (etapa: VslSubstep['etapa'], ok: boolean, motivo: string | null) =>
+      substeps.push({ etapa, ok, motivo });
 
     try {
       const r = await deps.vsl.extract({
@@ -905,23 +957,34 @@ async function stepProcessarVsl(deps: Deps, ctx: Ctx): Promise<unknown> {
 
       if (r.tooLong) {
         longas++;
+        sub('download', false, r.failReason ?? 'VSL longa demais para o limite');
         await deps.db.updateVsl(vslId, {
           status: 'longa_demais',
           failReason: r.failReason ?? 'VSL longa demais para o limite',
           durationSeconds: r.durationSeconds,
           manifestUrl: r.manifestUrl,
+          substeps,
         });
+        await deps.db.addEvent(ctx.investigationId, 'processar_vsl', 'rodando',
+          `⚠️ VSL "${t.url}": ${r.failReason ?? 'longa demais para o limite'}.`);
         continue;
       }
       if (!r.ok || !r.audioPath) {
         falhas++;
+        sub('download', false, r.failReason ?? 'mídia indisponível');
+        sub('audio', false, 'sem áudio para transcrever');
         await deps.db.updateVsl(vslId, {
           status: 'midia_indisponivel',
           failReason: r.failReason ?? 'mídia indisponível',
           manifestUrl: r.manifestUrl,
+          substeps,
         });
+        await deps.db.addEvent(ctx.investigationId, 'processar_vsl', 'rodando',
+          `⚠️ VSL "${t.url}": mídia indisponível${r.failReason ? ` (${r.failReason})` : ''}.`);
         continue;
       }
+      sub('download', true, null);
+      sub('audio', true, null);
 
       // Sobe o áudio (sempre) e o vídeo reduzido (quando ≤150MB).
       const audioStorage = `${ctx.investigationId}/vsl/${vslId}.mp3`;
@@ -981,30 +1044,50 @@ async function stepProcessarVsl(deps: Deps, ctx: Ctx): Promise<unknown> {
       const transcription = segments.map((s) => s.text).join('\n').trim();
       if (!transcription) {
         falhas++;
+        sub('transcricao', false, 'não foi possível transcrever nenhum trecho');
         await deps.db.updateVsl(vslId, {
-          status: 'midia_indisponivel',
+          status: 'falhou',
           failReason: 'não foi possível transcrever nenhum trecho',
           audioPath: audioStorage,
           videoPath: videoStorage,
           videoBytes: r.videoBytes,
           durationSeconds: r.durationSeconds,
           manifestUrl: r.manifestUrl,
+          substeps,
         });
+        await deps.db.addEvent(ctx.investigationId, 'processar_vsl', 'rodando',
+          `⚠️ VSL "${t.url}": transcrição vazia (nenhum trecho transcrito).`);
         continue;
       }
+      sub('transcricao', true, `${transcription.length} caracteres${partial ? ' (parcial)' : ''}`);
 
-      // Mapeia a VSL em 11 blocos + resumo (citações validadas na transcrição).
+      // Mapeia a VSL em 11 blocos + resumo. Mapeamento vazio/erro NÃO vira "concluída".
       let analysis: unknown = null;
+      let mapOk = false;
+      let mapMotivo: string | null = null;
       try {
         const a = await deps.analyzer.analyzeVsl({ transcription, segments, parcial: partial });
         analysis = a.analysis;
+        mapOk = a.mapeamentoOk;
+        mapMotivo = a.mapeamentoMotivo;
         for (const c of a.cost) await deps.db.addCost(ctx.investigationId, c);
       } catch (e) {
+        mapMotivo = errMessage(e);
         deps.log.warn(`Mapeamento de VSL falhou (vsl ${vslId})`, errMessage(e));
+        await deps.db.addEvent(ctx.investigationId, 'processar_vsl', 'falhou',
+          `Mapeamento da VSL falhou (vsl ${vslId}): ${errMessage(e)}`);
+      }
+      sub('mapeamento', mapOk, mapMotivo);
+      if (!mapOk) {
+        await deps.db.addEvent(ctx.investigationId, 'processar_vsl', 'rodando',
+          `⚠️ Mapeamento da VSL sem conteúdo: ${mapMotivo ?? 'resposta vazia do modelo'}.`);
       }
 
+      // concluída só com transcrição + mapeamento OK e sem parcial.
+      const status =
+        mapOk && !partial ? 'concluida' : 'concluida_com_problemas';
       await deps.db.updateVsl(vslId, {
-        status: partial ? 'parcial' : 'concluida',
+        status,
         durationSeconds: r.durationSeconds,
         audioPath: audioStorage,
         videoPath: videoStorage,
@@ -1017,15 +1100,18 @@ async function stepProcessarVsl(deps: Deps, ctx: Ctx): Promise<unknown> {
         transcriptionProvider: provider,
         analysis,
         manifestUrl: r.manifestUrl,
+        substeps,
       });
-      processadas++;
+      if (status === 'concluida') processadas++;
+      else comProblemas++;
     } catch (e) {
       falhas++;
-      await deps.db.updateVsl(vslId, { status: 'falhou', failReason: errMessage(e) });
+      sub('mapeamento', false, errMessage(e));
+      await deps.db.updateVsl(vslId, { status: 'falhou', failReason: errMessage(e), substeps });
       await deps.db.addEvent(
         ctx.investigationId,
         'processar_vsl',
-        'rodando',
+        'falhou',
         `⚠️ VSL "${t.url}" falhou: ${errMessage(e)}`,
       );
       deps.log.warn(`VSL falhou (${t.url})`, errMessage(e));
@@ -1035,7 +1121,49 @@ async function stepProcessarVsl(deps: Deps, ctx: Ctx): Promise<unknown> {
 
   const total = await deps.db.getCostTotal(ctx.investigationId);
   await deps.db.setFinalCost(ctx.investigationId, round(total));
-  return { alvos: list.length, processadas, falhas, longas };
+  return { alvos: list.length, processadas, comProblemas, falhas, longas, remapeadas };
+}
+
+/**
+ * Roda SÓ o mapeamento (IA) sobre uma transcrição já salva e grava o status +
+ * sub-etapas. Reaproveita a transcrição; não baixa nem transcreve.
+ */
+async function remapVsl(
+  deps: Deps,
+  ctx: Ctx,
+  vslId: string,
+  transcription: string,
+  segments: VslSegment[],
+  partial: boolean,
+): Promise<'concluida' | 'concluida_com_problemas'> {
+  const substeps: VslSubstep[] = [
+    { etapa: 'download', ok: true, motivo: 'reaproveitado' },
+    { etapa: 'audio', ok: true, motivo: 'reaproveitado' },
+    { etapa: 'transcricao', ok: true, motivo: `${transcription.length} caracteres (reaproveitada)` },
+  ];
+  let analysis: unknown = null;
+  let mapOk = false;
+  let mapMotivo: string | null = null;
+  try {
+    const a = await deps.analyzer.analyzeVsl({ transcription, segments, parcial: partial });
+    analysis = a.analysis;
+    mapOk = a.mapeamentoOk;
+    mapMotivo = a.mapeamentoMotivo;
+    for (const c of a.cost) await deps.db.addCost(ctx.investigationId, c);
+  } catch (e) {
+    mapMotivo = errMessage(e);
+    deps.log.warn(`Remapeamento de VSL falhou (vsl ${vslId})`, errMessage(e));
+    await deps.db.addEvent(ctx.investigationId, 'processar_vsl', 'falhou',
+      `Remapeamento da VSL falhou (vsl ${vslId}): ${errMessage(e)}`);
+  }
+  substeps.push({ etapa: 'mapeamento', ok: mapOk, motivo: mapMotivo });
+  if (!mapOk) {
+    await deps.db.addEvent(ctx.investigationId, 'processar_vsl', 'rodando',
+      `⚠️ Mapeamento da VSL sem conteúdo: ${mapMotivo ?? 'resposta vazia do modelo'}.`);
+  }
+  const status = mapOk && !partial ? 'concluida' : 'concluida_com_problemas';
+  await deps.db.updateVsl(vslId, { status, analysis, partial, substeps });
+  return status;
 }
 
 // ── helpers ──────────────────────────────────────────────────

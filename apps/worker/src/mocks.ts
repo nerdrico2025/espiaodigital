@@ -272,12 +272,26 @@ export class MemoryDb implements Db {
   }
   async insertVsl(input: any): Promise<{ id: string }> {
     const vid = id('vsl');
-    this.vsls.set(vid, { id: vid, ...input });
+    this.vsls.set(vid, { id: vid, status: 'rodando', ...input });
     return { id: vid };
   }
   async updateVsl(vslId: string, patch: any) {
     const v = this.vsls.get(vslId);
     if (v) Object.assign(v, patch);
+  }
+  async getVsls(): Promise<any[]> {
+    return [...this.vsls.values()].map((v) => ({
+      id: v.id,
+      funnelId: v.funnelId ?? null,
+      funnelStepId: v.funnelStepId ?? null,
+      sourceUrl: v.sourceUrl ?? null,
+      player: v.player ?? null,
+      manifestUrl: v.manifestUrl ?? null,
+      transcription: v.transcription ?? null,
+      segments: v.segments ?? [],
+      partial: !!v.partial,
+      status: v.status ?? 'pendente',
+    }));
   }
 }
 
@@ -387,6 +401,8 @@ export class MockTranscriber implements Transcriber {
 }
 
 export class MockAnalyzer implements Analyzer {
+  /** vslMapFails: simula mapeamento vazio (modelo não devolveu nada aproveitável). */
+  constructor(private opts: { vslMapFails?: boolean } = {}) {}
   async analyze(input: { mediaType: 'image' | 'video' }) {
     const analysis: CreativeAnalysis = {
       hook: 'Resultados rápidos em 7 dias',
@@ -423,6 +439,27 @@ export class MockAnalyzer implements Analyzer {
   }
 
   async analyzeVsl(input: { transcription: string; segments: VslSegment[]; parcial: boolean; ctaInfo?: any }) {
+    // Simula o modelo não retornando nada aproveitável (p/ smoke de "com problemas").
+    if (this.opts.vslMapFails) {
+      const vazio: VslAnalysis = {
+        resumo: {
+          bigIdea: null, mecanismo: null, oferta: null, preco: null, stack: null,
+          garantia: null, emocaoDominante: null, vilao: null, diferencial: null,
+        },
+        blocos: VSL_BLOCKS.map((d) => ({
+          bloco: d.key, nome: d.nome, presente: false, inicio: null, fim: null,
+          citacoes: [], analise: null, nota: null,
+        })),
+        ctaButtons: input.ctaInfo ?? null,
+        parcialAviso: input.parcial ? 'Transcrição parcial.' : null,
+      };
+      return {
+        analysis: vazio,
+        cost: [{ provider: 'openrouter', unit: 'mapeamento-vsl', quantity: 1, estimatedUsd: 0.05 }] as CostEntry[],
+        mapeamentoOk: false,
+        mapeamentoMotivo: 'o modelo não retornou resumo nem blocos preenchidos',
+      };
+    }
     const analysis: VslAnalysis = {
       resumo: {
         bigIdea: 'Método rápido para resultados em 7 dias',
@@ -448,13 +485,21 @@ export class MockAnalyzer implements Analyzer {
       ctaButtons: input.ctaInfo ?? null,
       parcialAviso: input.parcial ? 'Transcrição parcial.' : null,
     };
-    return { analysis, cost: [{ provider: 'openrouter', unit: 'mapeamento-vsl', quantity: 1, estimatedUsd: 0.05 }] as CostEntry[] };
+    return {
+      analysis,
+      cost: [{ provider: 'openrouter', unit: 'mapeamento-vsl', quantity: 1, estimatedUsd: 0.05 }] as CostEntry[],
+      mapeamentoOk: true,
+      mapeamentoMotivo: null,
+    };
   }
 }
 
 export class MockFunnel implements FunnelCapturer {
+  /** fail: simula bloqueio/sem resposta (nenhuma página capturada). */
+  constructor(private opts: { fail?: boolean } = {}) {}
   async capture(entryUrl: string, opts: { maxSteps: number; country: string }) {
     void opts;
+    if (this.opts.fail) throw new Error('página bloqueou o acesso (mock)');
     const steps: CapturedStep[] = [
       {
         order: 0,
@@ -519,6 +564,10 @@ export function makeMockDeps(opts?: {
   now?: number;
   db?: MemoryDb;
   inv?: { id: string; query: string; country: string; competitors: number; onlyActive: boolean; mode?: string };
+  /** Simula mapeamento de VSL vazio (p/ smoke "concluída com problemas"). */
+  vslMapFails?: boolean;
+  /** Simula captura de funil bloqueada (p/ smoke "concluída sem resultado"). */
+  funnelFails?: boolean;
 }): { deps: Deps; db: MemoryDb } {
   const now = opts?.now ?? Date.now();
   const inv =
@@ -531,8 +580,8 @@ export function makeMockDeps(opts?: {
     ads: new MockAdsProvider(opts?.strong ?? 3, now),
     media: new MockMedia(),
     transcriber: new MockTranscriber(opts?.provider ?? 'openai'),
-    analyzer: new MockAnalyzer(),
-    funnel: new MockFunnel(),
+    analyzer: new MockAnalyzer({ vslMapFails: opts?.vslMapFails }),
+    funnel: new MockFunnel({ fail: opts?.funnelFails }),
     vsl: new MockVsl(),
     clock: fixedClock(now),
     log: consoleLogger,

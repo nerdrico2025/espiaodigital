@@ -53,9 +53,8 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
   const funnelById = new Map((funnels ?? []).map((f) => [f.id, f]));
   const { data: fstepsAll } = await supabase
     .from('funnel_steps')
-    .select('id, funnel_id, step_order, screenshot_path')
+    .select('id, funnel_id, step_order, screenshot_path, html_path, text_path, url, step_type, analysis')
     .eq('investigation_id', params.id)
-    .not('screenshot_path', 'is', null)
     .order('step_order');
   const fsteps = (fstepsAll ?? []).filter((s) => funnelById.has(s.funnel_id));
 
@@ -69,7 +68,7 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
   const admin = createAdminClient();
   const paths = [
     ...crs.map((c) => c.storage_path as string),
-    ...fsteps.map((s) => s.screenshot_path as string),
+    ...fsteps.flatMap((s) => [s.screenshot_path, s.html_path, s.text_path].filter(Boolean) as string[]),
     ...vsls.flatMap((v) => [v.audio_path, v.video_path].filter(Boolean) as string[]),
   ];
   const { data: signedList } = await admin.storage.from('creatives').createSignedUrls(paths, 300);
@@ -97,15 +96,30 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
     totalBytes += await fileSize(url);
   }
 
-  // Screenshots de funil: pasta funil/<anunciante-ou-dominio>/passo-N.png
+  // Páginas do funil: paginas/<anunciante-ou-dominio>/passo-N.{png,html,md} +
+  // passo-N-analise.json. Print, HTML e texto limpo de cada página entram no zip.
   const funnelItems: { name: string; url: string }[] = [];
+  const inlineItems: { name: string; data: Uint8Array }[] = [];
   for (const s of fsteps) {
-    const url = signedByPath.get(s.screenshot_path as string);
-    if (!url) continue;
     const f = funnelById.get(s.funnel_id);
     const sub = slug(f?.candidate_id ? candById.get(f.candidate_id)?.name ?? 'anunciante' : f?.domain ?? 'pagina');
-    funnelItems.push({ name: `funil/${sub}/passo-${s.step_order + 1}.png`, url });
-    totalBytes += await fileSize(url);
+    const n = s.step_order + 1;
+    const addStreamed = async (path: string | null, ext: string) => {
+      if (!path) return;
+      const url = signedByPath.get(path);
+      if (!url) return;
+      funnelItems.push({ name: `paginas/${sub}/passo-${n}.${ext}`, url });
+      totalBytes += await fileSize(url);
+    };
+    await addStreamed(s.screenshot_path as string | null, 'png');
+    await addStreamed(s.html_path as string | null, 'html');
+    await addStreamed(s.text_path as string | null, 'md');
+    // Análise da página (inline, sem storage).
+    if (s.analysis) {
+      const header = `# Passo ${n}${s.step_type ? ` (${s.step_type})` : ''}\nURL: ${s.url ?? '—'}\n\n`;
+      const data = new TextEncoder().encode(header + JSON.stringify(s.analysis, null, 2));
+      inlineItems.push({ name: `paginas/${sub}/passo-${n}-analise.json`, data });
+    }
   }
 
   // VSLs: áudio/vídeo em vsl/<id>.<ext>
@@ -123,7 +137,7 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
     }
   }
 
-  if (items.length === 0 && funnelItems.length === 0) {
+  if (items.length === 0 && funnelItems.length === 0 && inlineItems.length === 0) {
     return NextResponse.json({ error: 'Nenhuma mídia baixada para empacotar.' }, { status: 404 });
   }
 
@@ -160,6 +174,9 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
     }
     for (const fi of funnelItems) {
       yield { name: fi.name, data: streamBody(fi.url) };
+    }
+    for (const ii of inlineItems) {
+      yield { name: ii.name, data: ii.data };
     }
     yield { name: 'transcricoes.md', data: mdBytes };
   }

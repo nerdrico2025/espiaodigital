@@ -26,6 +26,32 @@ function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+/**
+ * Rola a página até o fim (e volta ao topo) para disparar conteúdo lazy-load e
+ * deixar o DOM assentar ANTES de extrair texto/print. Sem isso, páginas que
+ * montam o conteúdo via JS (ou têm seções abaixo da dobra) eram capturadas num
+ * estado inicial/parcial — origem dos campos vazios/incoerentes no passo 1.
+ * Executado DENTRO do browser.
+ */
+async function autoScrollScript(): Promise<void> {
+  const w: any = window as any;
+  const step = Math.max(400, Math.floor(w.innerHeight * 0.9));
+  const maxLoops = 40;
+  let last = -1;
+  for (let i = 0; i < maxLoops; i++) {
+    w.scrollTo(0, document.body.scrollHeight);
+    await new Promise((r: any) => setTimeout(r, 250));
+    const h = document.body.scrollHeight;
+    if (h === last) break; // parou de crescer: tudo carregado
+    last = h;
+    w.scrollTo(0, (i + 1) * step);
+  }
+  w.scrollTo(0, 0);
+  await new Promise((r: any) => setTimeout(r, 300));
+}
+
+declare const window: any;
+
 /** Texto limpo (markdown simples) a partir do DOM visível. */
 function cleanTextScript(): string {
   // Executado no browser.
@@ -87,6 +113,9 @@ export class PlaywrightFunnel implements FunnelCapturer {
           await page.goto(currentUrl, { waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT });
           await page.waitForLoadState('networkidle', { timeout: 8000 }).catch(() => {});
           await sleep(WAIT_MIN + Math.floor(Math.random() * (WAIT_MAX - WAIT_MIN)));
+          // Rola a página toda (lazy-load) e deixa o DOM assentar antes de extrair.
+          await page.evaluate(autoScrollScript).catch(() => {});
+          await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {});
           finalUrl = page.url();
           screenshot = await page.screenshot({ fullPage: true }).catch(() => null);
           html = await page.content().catch(() => null);

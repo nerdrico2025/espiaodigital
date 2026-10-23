@@ -21,6 +21,7 @@ import { RealTranscriber } from '../apps/worker/src/providers/transcriber.js';
 import { RealMedia, type Uploader } from '../apps/worker/src/providers/media.js';
 import { filterOwnAds, mostFrequentPageId, adPageId } from '../apps/worker/src/pipeline/normalize.js';
 import { normalizeClaimedJob } from '../apps/worker/src/db/supabase-db.js';
+import { buildVslAnalysis } from '../apps/worker/src/providers/analyzer.js';
 import { resolveLimits, clampInvestigationConfig, DEFAULT_LIMITS, classifyCandidate, estimateInvestigationCost, adEvidenceLevel, computeAdEvidences, summarizeCandidateAds, mediaFileName, temNarracao, detectFunnelTech, parseInvestigationMode, stepsForMode } from '@espiao/shared';
 
 const line = '─'.repeat(60);
@@ -351,9 +352,68 @@ async function main() {
     ['cancelada: não marcou concluída', dbcx.status !== 'concluida'],
   ];
 
+  // ── VSL: mapeamento vazio → "Concluída com problemas" (não "Concluída") ──
+  const pageInv2 = { id: 'inv_pg2', query: 'https://pagina.com/vsl', country: 'BR', competitors: 1, onlyActive: true, mode: 'pagina' };
+  const { deps: dmp, db: dbmp } = makeMockDeps({ inv: pageInv2, now, vslMapFails: true });
+  await runInvestigation(dmp, 'inv_pg2');
+  const vslMapFail = [...dbmp.vsls.values()][0] as any;
+  const vslFailChecks: [string, boolean][] = [
+    ['VSL com mapeamento vazio NÃO fica "concluida"', vslMapFail?.status !== 'concluida'],
+    ['VSL com mapeamento vazio vira "concluida_com_problemas"',
+      vslMapFail?.status === 'concluida_com_problemas'],
+    ['VSL registra sub-etapa de transcrição OK',
+      (vslMapFail?.substeps ?? []).some((s: any) => s.etapa === 'transcricao' && s.ok)],
+    ['VSL registra sub-etapa de mapeamento falhou com motivo',
+      (vslMapFail?.substeps ?? []).some((s: any) => s.etapa === 'mapeamento' && !s.ok && s.motivo)],
+  ];
+
+  // ── Validador de citações: descarta a inexistente, mantém o bloco ──
+  const transc = 'Esta é a transcrição real da VSL. O método X muda tudo em sete dias.';
+  const rawLlm = {
+    resumo: { bigIdea: 'Método X em 7 dias', mecanismo: 'Método X', oferta: null, preco: null,
+      stack: null, garantia: null, emocaoDominante: null, vilao: null, diferencial: null },
+    blocos: [
+      {
+        bloco: '01', presente: true, inicio: '00:00', fim: '00:30',
+        // uma citação existe na transcrição, a outra é inventada:
+        citacoes: ['O método X muda tudo em sete dias', 'garantia de 30 dias sem risco'],
+        analise: 'Abre com a promessa central.', nota: 8,
+      },
+    ],
+  };
+  const built = buildVslAnalysis(rawLlm, transc, { parcial: false });
+  const bloco01 = built.analysis.blocos.find((b) => b.bloco === '01');
+  const citacaoChecks: [string, boolean][] = [
+    ['citação inexistente é descartada', !(bloco01?.citacoes ?? []).some((c) => c.includes('garantia de 30'))],
+    ['citação válida é mantida', (bloco01?.citacoes ?? []).some((c) => c.includes('muda tudo em sete dias'))],
+    ['bloco NÃO é zerado quando uma citação cai', bloco01?.presente === true && bloco01?.analise != null],
+    ['resumo NÃO é zerado quando uma citação cai', built.analysis.resumo.bigIdea != null],
+    ['mapeamento considerado OK (há conteúdo)', built.mapeamentoOk === true],
+    ['nota torta (string) não derruba o bloco',
+      buildVslAnalysis({ blocos: [{ bloco: 1, presente: true, nota: '7', analise: 'ok' }] }, transc, { parcial: false })
+        .analysis.blocos[0]?.nota === 7],
+  ];
+
+  // ── Modo página sem nenhum funil capturado → "Concluída sem resultado" ──
+  const pageInv3 = { id: 'inv_pg3', query: 'https://bloqueada.com/vsl', country: 'BR', competitors: 1, onlyActive: true, mode: 'pagina' };
+  const { deps: dnr, db: dbnr } = makeMockDeps({ inv: pageInv3, now, funnelFails: true });
+  await runInvestigation(dnr, 'inv_pg3');
+  const noResultChecks: [string, boolean][] = [
+    ['sem resultado: nenhum funil concluído',
+      [...dbnr.funnels.values()].every((f: any) => f.status !== 'concluida')],
+    ['sem resultado: nenhuma VSL processada', dbnr.vsls.size === 0],
+    ['sem resultado: investigação tem aviso explicando o motivo',
+      !!dbnr.notice && /captur/i.test(dbnr.notice)],
+    ['sem resultado: status cru continua concluida (a tela mostra "sem resultado")',
+      dbnr.status === 'concluida'],
+  ];
+
   const checks: [string, boolean][] = [
     ...modeChecks,
     ...pageModeChecks,
+    ...vslFailChecks,
+    ...citacaoChecks,
+    ...noResultChecks,
     ...cancelChecks,
     ...queueChecks,
     ...configChecks,

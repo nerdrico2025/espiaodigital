@@ -207,6 +207,21 @@ export interface Db {
     manifestUrl: string | null;
   }): Promise<{ id: string }>;
   updateVsl(vslId: string, patch: Record<string, unknown>): Promise<void>;
+  /** VSLs já gravadas da investigação (para reaproveitar transcrição no "refazer mapeamento"). */
+  getVsls(investigationId: string): Promise<VslRow[]>;
+}
+
+export interface VslRow {
+  id: string;
+  funnelId: string | null;
+  funnelStepId: string | null;
+  sourceUrl: string | null;
+  player: string | null;
+  manifestUrl: string | null;
+  transcription: string | null;
+  segments: VslSegment[];
+  partial: boolean;
+  status: string;
 }
 
 export interface VslTarget {
@@ -298,13 +313,19 @@ export interface Analyzer {
     text: string | null;
     stepTypeGuess?: string | null;
   }): Promise<{ analysis: FunnelStepAnalysis; cost: CostEntry[] }>;
-  /** Mapeia a VSL em 11 blocos + resumo executivo (citações literais). */
+  /** Mapeia a VSL em 11 blocos + resumo executivo (citações literais).
+   *  mapeamentoOk=false quando o modelo não devolveu nada aproveitável. */
   analyzeVsl(input: {
     transcription: string;
     segments: VslSegment[];
     parcial: boolean;
     ctaInfo?: { cta: string; aparecemSeg: number | null }[] | null;
-  }): Promise<{ analysis: VslAnalysis; cost: CostEntry[] }>;
+  }): Promise<{
+    analysis: VslAnalysis;
+    cost: CostEntry[];
+    mapeamentoOk: boolean;
+    mapeamentoMotivo: string | null;
+  }>;
 }
 
 // ── VSL: download + preparação de mídia ──────────────────────

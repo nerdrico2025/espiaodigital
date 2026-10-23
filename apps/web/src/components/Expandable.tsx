@@ -1,8 +1,16 @@
 'use client';
 import { useState } from 'react';
 
-export function Expandable({ title, children }: { title: string; children: React.ReactNode }) {
-  const [open, setOpen] = useState(false);
+export function Expandable({
+  title,
+  children,
+  defaultOpen = false,
+}: {
+  title: string;
+  children: React.ReactNode;
+  defaultOpen?: boolean;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
   return (
     <div className="rounded-lg border border-gray-200">
       <button

@@ -340,3 +340,32 @@ export interface VslAnalysis {
   /** Aviso quando a transcrição é parcial. */
   parcialAviso: string | null;
 }
+
+/** Sub-etapas do processamento de uma VSL, cada uma com ok/falhou + motivo. */
+export type VslSubstepName = 'download' | 'audio' | 'transcricao' | 'mapeamento';
+export interface VslSubstep {
+  etapa: VslSubstepName;
+  ok: boolean;
+  motivo: string | null;
+}
+export const VSL_SUBSTEP_PT: Record<VslSubstepName, string> = {
+  download: 'Download do vídeo',
+  audio: 'Extração de áudio',
+  transcricao: 'Transcrição',
+  mapeamento: 'Mapeamento (IA)',
+};
+
+/**
+ * Status final de uma VSL:
+ * - 'concluida': transcrição + mapeamento OK.
+ * - 'concluida_com_problemas': transcrição OK, mas mapeamento vazio/falhou ou parcial.
+ * - 'falhou' / 'midia_indisponivel' / 'longa_demais': não há transcrição utilizável.
+ */
+export const VSL_STATUS = {
+  concluida: 'concluida',
+  concluidaComProblemas: 'concluida_com_problemas',
+  parcial: 'parcial',
+  falhou: 'falhou',
+  midiaIndisponivel: 'midia_indisponivel',
+  longaDemais: 'longa_demais',
+} as const;

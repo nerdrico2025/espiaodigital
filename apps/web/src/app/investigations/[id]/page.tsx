@@ -6,8 +6,10 @@ import {
   SEM_NARRACAO_MSG,
   parseInvestigationMode,
   stepsForMode,
+  VSL_SUBSTEP_PT,
   type CandidateMetrics,
   type CandidateStatus,
+  type VslSubstep,
 } from '@espiao/shared';
 import { createClient } from '@/lib/supabase/server';
 import { createAdminClient } from '@/lib/supabase/admin';
@@ -16,6 +18,8 @@ import { StepBar } from '@/components/StepBar';
 import { AutoRefresh } from '@/components/AutoRefresh';
 import { Expandable } from '@/components/Expandable';
 import { CancelButton } from '@/components/CancelButton';
+import { Tabs } from '@/components/Tabs';
+import { RemapVslButton } from '@/components/RemapVslButton';
 
 export const dynamic = 'force-dynamic';
 
@@ -121,6 +125,13 @@ export default async function InvestigationDetail({ params }: { params: { id: st
   const isPagina = mode === 'pagina';
   const modeSteps = stepsForMode(mode);
 
+  // Modo página sem nenhuma página capturada com sucesso → "Concluída sem
+  // resultado" (amarelo), nunca "Concluída" verde.
+  const capturedFunnels = funnels.filter((f) => f.status === 'concluida').length;
+  const noResult = isPagina && inv.status === 'concluida' && capturedFunnels === 0;
+  const badgeLabel = noResult ? 'Concluída sem resultado' : STATUS_PT[inv.status];
+  const badgeStyle = noResult ? STATUS_STYLE['cancelada'] : STATUS_STYLE[inv.status];
+
   return (
     <div>
       <AutoRefresh active={running} />
@@ -159,17 +170,22 @@ export default async function InvestigationDetail({ params }: { params: { id: st
           )}
         </div>
         <div className="flex items-center gap-2">
-          <span className={`badge ${STATUS_STYLE[inv.status]}`}>{STATUS_PT[inv.status]}</span>
+          <span className={`badge ${badgeStyle}`}>{badgeLabel}</span>
           {running && <CancelButton investigationId={params.id} />}
-          <a className="btn-ghost" href={`/api/investigations/${params.id}/export?format=md`}>
-            Exportar .md
-          </a>
-          <a className="btn-ghost" href={`/api/investigations/${params.id}/export?format=csv`}>
-            Exportar .csv
-          </a>
-          <a className="btn-ghost" href={`/api/investigations/${params.id}/media.zip`}>
-            Baixar todas as mídias (.zip)
-          </a>
+          {/* No modo página os botões de exportar ficam na aba "Exportar". */}
+          {!isPagina && (
+            <>
+              <a className="btn-ghost" href={`/api/investigations/${params.id}/export?format=md`}>
+                Exportar .md
+              </a>
+              <a className="btn-ghost" href={`/api/investigations/${params.id}/export?format=csv`}>
+                Exportar .csv
+              </a>
+              <a className="btn-ghost" href={`/api/investigations/${params.id}/media.zip`}>
+                Baixar todas as mídias (.zip)
+              </a>
+            </>
+          )}
         </div>
       </div>
 
@@ -194,7 +210,8 @@ export default async function InvestigationDetail({ params }: { params: { id: st
         )}
       </div>
 
-      {inv.notice && (
+      {/* No modo página o aviso aparece dentro da aba Resumo (evita duplicar). */}
+      {inv.notice && !isPagina && (
         <div className="mb-5 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
           ⚠️ {inv.notice}
         </div>
@@ -216,6 +233,22 @@ export default async function InvestigationDetail({ params }: { params: { id: st
         <p className="mb-5 text-xs text-gray-400">Última atividade: {dateFmt(lastActivityIso)}</p>
       )}
 
+      {isPagina ? (
+        <PageModeView
+          investigationId={params.id}
+          funnels={funnels}
+          funnelSteps={funnelSteps}
+          vsls={vsls}
+          signed={signed}
+          modeSteps={modeSteps}
+          job={job}
+          events={(events ?? []) as any}
+          jobStatus={inv.status}
+          running={running}
+          noResult={noResult}
+          noticeMotivo={inv.notice ?? null}
+        />
+      ) : (
       <div className="grid grid-cols-1 gap-5 lg:grid-cols-[320px_1fr]">
         <StepBar
           investigationId={params.id}
@@ -474,6 +507,226 @@ export default async function InvestigationDetail({ params }: { params: { id: st
           </div>
         </div>
       </div>
+      )}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// MODO PÁGINA — abas: Resumo · Páginas do funil · VSL · Exportar
+// ─────────────────────────────────────────────────────────────
+function PageModeView({
+  investigationId,
+  funnels,
+  funnelSteps,
+  vsls,
+  signed,
+  modeSteps,
+  job,
+  events,
+  jobStatus,
+  running,
+  noResult,
+  noticeMotivo,
+}: {
+  investigationId: string;
+  funnels: any[];
+  funnelSteps: any[];
+  vsls: any[];
+  signed: Map<string, string>;
+  modeSteps: any[];
+  job: any;
+  events: any[];
+  jobStatus: string;
+  running: boolean;
+  noResult: boolean;
+  noticeMotivo: string | null;
+}) {
+  const primary = funnels.find((f) => f.status === 'concluida') ?? funnels[0] ?? null;
+  const tech = primary?.tech ?? {};
+  const pixels: { tipo: string; id: string | null }[] = primary?.pixels ?? tech.pixels ?? [];
+  const videosDetectados = (primary?.manifests ?? tech.manifests ?? []).length;
+  const vslResumo = (vsls.find((v) => v.analysis?.resumo)?.analysis?.resumo) ?? {};
+  const NC = () => <span className="text-gray-400">não coletado</span>;
+
+  const resumo = (
+    <div className="space-y-5">
+      {noResult && (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+          ⚠️ Concluída sem resultado — {noticeMotivo ?? 'nenhuma página do funil foi capturada.'}
+        </div>
+      )}
+      <div className="card">
+        <h2 className="mb-3 text-lg font-semibold">Resumo</h2>
+        <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm sm:grid-cols-3">
+          <Item label="Checkout" value={primary?.checkout_platform} />
+          <Item label="Player de vídeo" value={primary?.video_player} />
+          <Item label="Vídeos detectados" value={videosDetectados || undefined} />
+          <Item label="Pixels" value={pixels.length || undefined} />
+          <Item label="Preço" value={vslResumo.preco} />
+          <Item label="Garantia" value={vslResumo.garantia} />
+        </dl>
+        <div className="mt-3 border-t border-gray-100 pt-3 text-sm">
+          <span className="font-medium">Promessa: </span>
+          {vslResumo.bigIdea || vslResumo.diferencial ? (
+            <span>{vslResumo.bigIdea ?? vslResumo.diferencial}</span>
+          ) : (
+            <NC />
+          )}
+        </div>
+      </div>
+
+      <StepBar
+        investigationId={investigationId}
+        steps={modeSteps}
+        completed={(job?.completed_steps ?? []) as string[]}
+        current={job?.current_step ?? null}
+        jobStatus={jobStatus}
+        lastError={job?.last_error ?? null}
+        events={events}
+      />
+    </div>
+  );
+
+  const paginas = (
+    <div className="space-y-3">
+      {funnelSteps.length === 0 ? (
+        <div className="card text-sm text-gray-500">
+          {running ? 'Processando… as páginas aparecem ao final da captura.' : 'Nenhuma página capturada.'}
+        </div>
+      ) : (
+        funnelSteps.map((s) => <FunnelStepCard key={s.id} step={s} signed={signed} />)
+      )}
+    </div>
+  );
+
+  const vslTab = (
+    <div className="space-y-4">
+      {vsls.length === 0 ? (
+        <div className="card text-sm text-gray-500">
+          {running ? 'Processando… a VSL aparece após o download e a transcrição.' : 'Nenhuma VSL encontrada no funil.'}
+        </div>
+      ) : (
+        vsls.map((v) => <VslBlock key={v.id} vsl={v} signed={signed} investigationId={investigationId} />)
+      )}
+    </div>
+  );
+
+  const exportar = (
+    <div className="card space-y-3 text-sm">
+      <h2 className="text-lg font-semibold">Exportar</h2>
+      <ExportRow
+        href={`/api/investigations/${investigationId}/export?format=md`}
+        label="Exportar .md"
+        desc="Relatório em texto (Markdown): resumo, páginas do funil e mapeamento da VSL em 11 blocos."
+      />
+      <ExportRow
+        href={`/api/investigations/${investigationId}/export?format=csv`}
+        label="Exportar .csv"
+        desc="Planilha com uma linha por página/VSL e seus campos (tipo, preço, checkout, player, etc.)."
+      />
+      <ExportRow
+        href={`/api/investigations/${investigationId}/media.zip`}
+        label="Baixar tudo (.zip)"
+        desc="Prints, HTML e texto limpo de cada página (pasta paginas/), análise de cada passo e áudio/vídeo da VSL (pasta vsl/)."
+      />
+    </div>
+  );
+
+  return (
+    <Tabs
+      tabs={[
+        { id: 'resumo', label: 'Resumo', content: resumo },
+        { id: 'paginas', label: 'Páginas do funil', content: paginas },
+        { id: 'vsl', label: 'VSL', content: vslTab },
+        { id: 'exportar', label: 'Exportar', content: exportar },
+      ]}
+    />
+  );
+}
+
+function Item({ label, value }: { label: string; value: unknown }) {
+  const empty = value == null || value === '';
+  return (
+    <div>
+      <dt className="text-xs text-gray-500">{label}</dt>
+      <dd className={empty ? 'text-gray-400' : 'font-medium'}>{empty ? 'não coletado' : String(value)}</dd>
+    </div>
+  );
+}
+
+function ExportRow({ href, label, desc }: { href: string; label: string; desc: string }) {
+  return (
+    <div className="flex items-start justify-between gap-3 border-b border-gray-100 pb-3 last:border-0 last:pb-0">
+      <p className="text-gray-600">{desc}</p>
+      <a className="btn-ghost shrink-0" href={href}>
+        {label}
+      </a>
+    </div>
+  );
+}
+
+// Um cartão por passo do funil: tipo, URL, miniatura pequena (clique abre o
+// print inteiro) e a "Análise da página" aberta por padrão. Técnicos recolhidos.
+function FunnelStepCard({ step, signed }: { step: any; signed: Map<string, string> }) {
+  const shot = step.screenshot_path ? signed.get(step.screenshot_path) : null;
+  const a = step.analysis ?? {};
+  const tipo = a.tipo ?? step.step_type;
+  return (
+    <div className="card">
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <span className="badge bg-gray-100 text-gray-700">
+          {step.step_order + 1}. {tipo ? STEP_TYPE_PT[tipo] ?? tipo : 'não coletado'}
+        </span>
+        {step.blocked && <span className="badge bg-amber-100 text-amber-800">possível bloqueio</span>}
+      </div>
+      <p className="mb-2 break-all text-[11px] text-gray-400">{step.url}</p>
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-[120px_1fr]">
+        {shot ? (
+          // Miniatura de altura fixa; abre o print inteiro em tela cheia.
+          // eslint-disable-next-line @next/next/no-img-element
+          <a href={shot} target="_blank" rel="noreferrer" className="block">
+            <img alt="print do passo" className="h-28 w-full rounded border border-gray-200 object-cover object-top" src={shot} />
+            <span className="mt-1 block text-center text-[11px] text-gray-400">abrir print</span>
+          </a>
+        ) : (
+          <div className="flex h-28 items-center justify-center rounded border border-gray-200 bg-gray-50 text-[11px] text-gray-400">
+            sem print
+          </div>
+        )}
+        <div className="space-y-2">
+          <Expandable title="Análise da página" defaultOpen>
+            <dl className="space-y-1 text-xs">
+              {(
+                [
+                  ['Headline', a.headline],
+                  ['Promessa', a.promessa],
+                  ['Mecanismo', a.mecanismo],
+                  ['Prova', a.prova],
+                  ['Oferta', a.oferta],
+                  ['Preço', a.preco],
+                  ['Bônus', a.bonus],
+                  ['Garantia', a.garantia],
+                  ['Urgência', a.urgencia],
+                  ['CTA', a.cta],
+                ] as [string, unknown][]
+              ).map(([k, v]) => (
+                <div key={k}>
+                  <span className="font-medium">{k}:</span>{' '}
+                  {v == null || v === '' ? <span className="text-gray-400">não coletado</span> : String(v)}
+                </div>
+              ))}
+            </dl>
+          </Expandable>
+          <Expandable title="Detalhes técnicos">
+            <div className="text-xs text-gray-500">
+              {step.load_ms != null && <div>Tempo de carga: {step.load_ms} ms</div>}
+              {step.html_path && <div className="break-all">HTML salvo: {step.html_path}</div>}
+              {step.text_path && <div className="break-all">Texto limpo salvo: {step.text_path}</div>}
+            </div>
+          </Expandable>
+        </div>
+      </div>
     </div>
   );
 }
@@ -540,7 +793,7 @@ function FunnelCard({
           )}
           {manifests.length > 0 && (
             <div>
-              <span className="font-medium">Manifests de vídeo:</span> {manifests.length} (VSL — Prompt B)
+              <span className="font-medium">Vídeos detectados:</span> {manifests.length}
             </div>
           )}
         </div>
@@ -610,12 +863,24 @@ function FunnelCard({
 
 const VSL_STATUS_PT: Record<string, string> = {
   concluida: 'Concluída',
+  concluida_com_problemas: 'Concluída com problemas',
   parcial: 'Transcrição parcial',
   midia_indisponivel: 'Mídia indisponível',
   longa_demais: 'VSL longa demais',
   falhou: 'Falhou',
   rodando: 'Processando…',
   pendente: 'Pendente',
+};
+
+const VSL_STATUS_STYLE: Record<string, string> = {
+  concluida: 'bg-green-100 text-green-700',
+  concluida_com_problemas: 'bg-amber-100 text-amber-800',
+  parcial: 'bg-amber-100 text-amber-800',
+  midia_indisponivel: 'bg-gray-100 text-gray-600',
+  longa_demais: 'bg-amber-100 text-amber-800',
+  falhou: 'bg-red-100 text-red-700',
+  rodando: 'bg-blue-100 text-blue-700',
+  pendente: 'bg-gray-100 text-gray-600',
 };
 
 function fmtSec(sec: number | null | undefined): string {
@@ -625,23 +890,60 @@ function fmtSec(sec: number | null | undefined): string {
   return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 }
 
-function VslBlock({ vsl, signed }: { vsl: any; signed: Map<string, string> }) {
+function VslBlock({
+  vsl,
+  signed,
+  investigationId,
+}: {
+  vsl: any;
+  signed: Map<string, string>;
+  investigationId?: string;
+}) {
   const audio = vsl.audio_path ? signed.get(vsl.audio_path) : null;
   const video = vsl.video_path ? signed.get(vsl.video_path) : null;
   const a = vsl.analysis ?? {};
   const resumo = a.resumo ?? {};
   const blocos: any[] = a.blocos ?? [];
-  const ok = vsl.status === 'concluida' || vsl.status === 'parcial';
+  const ok = vsl.status === 'concluida' || vsl.status === 'parcial' || vsl.status === 'concluida_com_problemas';
+  const substeps: VslSubstep[] = vsl.substeps ?? [];
+  // "Refazer só o mapeamento" só faz sentido se há transcrição salva.
+  const canRemap = !!investigationId && !!vsl.transcription;
   const NC = () => <span className="text-gray-400">não coletado</span>;
   return (
     <div className="mt-3 rounded-lg border border-brand/30 bg-brand-soft/40 p-3">
       <div className="mb-2 flex flex-wrap items-center gap-2">
         <span className="badge bg-brand-soft text-brand">VSL</span>
-        <span className="text-xs text-gray-500">{VSL_STATUS_PT[vsl.status] ?? vsl.status}</span>
+        <span className={`badge ${VSL_STATUS_STYLE[vsl.status] ?? 'bg-gray-100 text-gray-600'}`}>
+          {VSL_STATUS_PT[vsl.status] ?? vsl.status}
+        </span>
         {vsl.duration_seconds != null && (
           <span className="text-xs text-gray-400">· {fmtSec(Number(vsl.duration_seconds))}</span>
         )}
+        {canRemap && (
+          <span className="ml-auto">
+            <RemapVslButton investigationId={investigationId!} />
+          </span>
+        )}
       </div>
+
+      {/* Status por sub-etapa: download, áudio, transcrição, mapeamento. */}
+      {substeps.length > 0 && (
+        <ul className="mb-2 flex flex-wrap gap-2 text-[11px]">
+          {substeps.map((s) => (
+            <li
+              key={s.etapa}
+              className={`rounded px-1.5 py-0.5 ${s.ok ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}
+              title={s.motivo ?? undefined}
+            >
+              {s.ok ? '✓' : '✕'} {VSL_SUBSTEP_PT[s.etapa] ?? s.etapa}
+              {s.motivo ? <span className="text-gray-500"> · {s.motivo}</span> : ''}
+            </li>
+          ))}
+        </ul>
+      )}
+      {vsl.status === 'falhou' && vsl.fail_reason && (
+        <p className="mb-2 text-xs text-red-600">{vsl.fail_reason}</p>
+      )}
 
       {/* Avisos */}
       <div className="mb-2 flex flex-wrap gap-1">

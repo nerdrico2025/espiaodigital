@@ -5,6 +5,7 @@ import type {
   CostEntry,
   NormalizedAd,
   StepName,
+  VslSegment,
 } from '@espiao/shared';
 import type {
   AdRow,
@@ -14,6 +15,7 @@ import type {
   CreativeRow,
   Db,
   InvestigationRow,
+  VslRow,
 } from '../interfaces.js';
 
 const toTs = (ms: number | null) => (ms == null ? null : new Date(ms).toISOString());
@@ -634,11 +636,32 @@ export class SupabaseDb implements Db {
       transcriptionProvider: 'transcription_provider',
       analysis: 'analysis',
       manifestUrl: 'manifest_url',
+      substeps: 'substeps',
     };
     const upd: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(patch)) if (map[k]) upd[map[k]] = v;
     const { error } = await this.sb.from('vsls').update(upd).eq('id', vslId);
     if (error) throw new Error(`updateVsl: ${error.message}`);
+  }
+
+  async getVsls(investigationId: string): Promise<VslRow[]> {
+    const { data, error } = await this.sb
+      .from('vsls')
+      .select('id, funnel_id, funnel_step_id, source_url, player, manifest_url, transcription, segments, partial, status')
+      .eq('investigation_id', investigationId);
+    if (error) throw new Error(`getVsls: ${error.message}`);
+    return ((data as any[]) ?? []).map((d) => ({
+      id: d.id,
+      funnelId: d.funnel_id,
+      funnelStepId: d.funnel_step_id,
+      sourceUrl: d.source_url,
+      player: d.player,
+      manifestUrl: d.manifest_url,
+      transcription: d.transcription,
+      segments: (d.segments ?? []) as VslSegment[],
+      partial: !!d.partial,
+      status: d.status,
+    }));
   }
 
   async saveCandidateSummary(
