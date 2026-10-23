@@ -6,6 +6,7 @@ import { ApifyAdsProvider } from './providers/apify-ads.js';
 import { LlmAnalyzer } from './providers/analyzer.js';
 import { RealTranscriber } from './providers/transcriber.js';
 import { RealMedia, type Uploader } from './providers/media.js';
+import { PlaywrightFunnel } from './providers/funnel.js';
 
 export const defaultLogger: Logger = {
   info: (m, meta) => console.log(JSON.stringify({ lvl: 'info', m, meta, t: new Date().toISOString() })),
@@ -47,6 +48,7 @@ export function buildRealDeps(env: WorkerEnv = readEnv()): { deps: Deps; db: Sup
       openaiKey: env.OPENAI_API_KEY,
     }),
     analyzer: new LlmAnalyzer({ apiKey: env.OPENROUTER_API_KEY!, model: env.LLM_MODEL_ANALYSIS }),
+    funnel: new PlaywrightFunnel(),
     clock: { now: () => Date.now() },
     log: defaultLogger,
   };

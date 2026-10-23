@@ -8,10 +8,13 @@ import type {
   CostEntry,
   CreativeAnalysis,
   EvidenceBreakdown,
+  FunnelStepAnalysis,
+  FunnelTech,
   InvestigationConfig,
   InvestigationInput,
   MediaType,
   NormalizedAd,
+  RequestLog,
   StepName,
 } from '@espiao/shared';
 
@@ -144,6 +147,45 @@ export interface Db {
     candidateId: string,
     summary: { summary: string; hookPatterns: string[]; anglePatterns: string[] },
   ): Promise<void>;
+
+  // ── Funil (fase 05) ──
+  /** Sobe um arquivo arbitrário ao bucket privado `creatives`. */
+  uploadMedia(storagePath: string, data: Buffer | string, contentType: string): Promise<void>;
+  insertFunnel(input: {
+    investigationId: string;
+    candidateId: string | null;
+    adId: string | null;
+    entryUrl: string;
+    domain: string | null;
+  }): Promise<{ id: string }>;
+  updateFunnel(
+    funnelId: string,
+    patch: {
+      status?: string;
+      checkoutPlatform?: string | null;
+      videoPlayer?: string | null;
+      pixels?: FunnelTech['pixels'];
+      manifests?: string[];
+      tech?: FunnelTech;
+      blocked?: boolean;
+    },
+  ): Promise<void>;
+  insertFunnelStep(input: {
+    funnelId: string;
+    investigationId: string;
+    order: number;
+    stepType: string | null;
+    url: string;
+    screenshotPath: string | null;
+    htmlPath: string | null;
+    textPath: string | null;
+    requests: RequestLog[];
+    analysis: FunnelStepAnalysis | null;
+    blocked: boolean;
+    loadMs: number | null;
+  }): Promise<{ id: string }>;
+  /** Índice de pixels já vistos (id + domínio) para sinalizar "mesmo pixel em outro domínio". */
+  getFunnelPixelIndex(): Promise<{ id: string; domain: string }[]>;
 }
 
 // ── Provedores externos ──────────────────────────────────────
@@ -221,6 +263,33 @@ export interface Analyzer {
     /** Dica de contexto p/ grafia correta de marcas. */
     context?: { brand?: string | null; domain?: string | null };
   }): Promise<AnalyzeResult>;
+  /** Analisa UM passo de funil (classifica tipo + extrai campos). */
+  analyzeFunnelStep(input: {
+    url: string;
+    text: string | null;
+    stepTypeGuess?: string | null;
+  }): Promise<{ analysis: FunnelStepAnalysis; cost: CostEntry[] }>;
+}
+
+// ── Captura de funil (Playwright) ────────────────────────────
+export interface CapturedStep {
+  order: number;
+  url: string;
+  stepTypeGuess: string | null;
+  screenshot: Buffer | null;
+  html: string | null;
+  text: string | null;
+  requests: RequestLog[];
+  blocked: boolean;
+  loadMs: number;
+}
+
+export interface FunnelCapturer {
+  /** Captura a página e segue o CTA até estabilizar/checkout (máx. maxSteps). */
+  capture(
+    entryUrl: string,
+    opts: { maxSteps: number; country: string },
+  ): Promise<{ steps: CapturedStep[] }>;
 }
 
 export interface Clock {
@@ -240,6 +309,7 @@ export interface Deps {
   media: MediaPipeline;
   transcriber: Transcriber;
   analyzer: Analyzer;
+  funnel: FunnelCapturer;
   clock: Clock;
   log: Logger;
 }

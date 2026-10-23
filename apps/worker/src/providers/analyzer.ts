@@ -1,8 +1,37 @@
 import { z } from 'zod';
-import type { CostEntry, CreativeAnalysis } from '@espiao/shared';
+import type { CostEntry, CreativeAnalysis, FunnelStepAnalysis } from '@espiao/shared';
 import { PRICE_REFERENCE } from '@espiao/shared';
 import type { Analyzer } from '../interfaces.js';
 import { openRouterChat, parseJsonLoose, type ChatMessage } from './openrouter.js';
+
+const funnelStepSchema = z.object({
+  tipo: z
+    .enum(['pre_sell', 'lp', 'quiz', 'vsl', 'checkout', 'upsell', 'obrigado', 'outro'])
+    .nullable(),
+  headline: z.string().nullable(),
+  promessa: z.string().nullable(),
+  mecanismo: z.string().nullable(),
+  prova: z.string().nullable(),
+  oferta: z.string().nullable(),
+  preco: z.string().nullable(),
+  bonus: z.string().nullable(),
+  garantia: z.string().nullable(),
+  urgencia: z.string().nullable(),
+  cta: z.string().nullable(),
+});
+
+const FUNNEL_SYSTEM = `Você analisa UMA página de um funil de vendas. Responda SOMENTE um objeto JSON
+com as chaves: tipo, headline, promessa, mecanismo, prova, oferta, preco, bonus, garantia, urgencia, cta.
+- tipo deve ser um de: pre_sell, lp, quiz, vsl, checkout, upsell, obrigado, outro.
+- Preencha cada campo com o que estiver REALMENTE no texto da página.
+- Se a informação NÃO estiver no material, use null. NUNCA invente preço, bônus ou garantia.`;
+
+function emptyFunnelStep(): FunnelStepAnalysis {
+  return {
+    tipo: null, headline: null, promessa: null, mecanismo: null, prova: null,
+    oferta: null, preco: null, bonus: null, garantia: null, urgencia: null, cta: null,
+  };
+}
 
 const analysisSchema = z.object({
   hook: z.string().nullable(),
@@ -125,6 +154,41 @@ export class LlmAnalyzer implements Analyzer {
         unit: 'analise-criativo',
         quantity: usage.total_tokens ?? 1,
         estimatedUsd: PRICE_REFERENCE.llmPerCreativeUsd,
+        note: this.cfg.model,
+      },
+    ];
+    return { analysis, cost };
+  }
+
+  async analyzeFunnelStep(input: {
+    url: string;
+    text: string | null;
+    stepTypeGuess?: string | null;
+  }): Promise<{ analysis: FunnelStepAnalysis; cost: CostEntry[] }> {
+    const parts = [
+      `URL: ${input.url}`,
+      input.stepTypeGuess ? `Palpite de tipo (heurística): ${input.stepTypeGuess}` : '',
+      input.text ? `Texto da página:\n${input.text.slice(0, 12000)}` : '(sem texto coletado)',
+    ].filter(Boolean);
+
+    const { content: out, usage } = await openRouterChat({
+      apiKey: this.cfg.apiKey,
+      model: this.cfg.model,
+      jsonMode: true,
+      messages: [
+        { role: 'system', content: FUNNEL_SYSTEM },
+        { role: 'user', content: parts.join('\n') },
+      ],
+    });
+
+    const safe = funnelStepSchema.safeParse(parseJsonLoose(out));
+    const analysis: FunnelStepAnalysis = safe.success ? safe.data : emptyFunnelStep();
+    const cost: CostEntry[] = [
+      {
+        provider: 'openrouter',
+        unit: 'analise-passo-funil',
+        quantity: usage.total_tokens ?? 1,
+        estimatedUsd: PRICE_REFERENCE.llmPerFunnelStepUsd,
         note: this.cfg.model,
       },
     ];

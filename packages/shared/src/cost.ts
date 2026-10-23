@@ -16,6 +16,20 @@ export function estimateInvestigationCost(
   const p = PRICE_REFERENCE;
   const entries: CostEntry[] = [];
 
+  // Modo "pagina": só captura+análise de 1 funil (sem descoberta/ads/transcrição).
+  if (mode === 'pagina') {
+    const steps = limits.funnelMaxSteps;
+    entries.push({
+      provider: 'openrouter',
+      unit: 'analise-passo-funil',
+      quantity: steps,
+      estimatedUsd: steps * p.llmPerFunnelStepUsd,
+      note: `1 página, até ${steps} passos`,
+    });
+    const total = entries.reduce((s, e) => s + e.estimatedUsd, 0);
+    return { total: round(total), entries };
+  }
+
   // Nº de empresas pesquisadas no Apify e analisadas.
   const alvos = mode === 'anunciante' ? 1 : limits.maxCandidates;
   const analisados = mode === 'anunciante' ? 1 : competitors;
@@ -67,6 +81,17 @@ export function estimateInvestigationCost(
     unit: 'analise-criativo',
     quantity: analyzed,
     estimatedUsd: analyzed * p.llmPerCreativeUsd,
+  });
+
+  // Captura de funil: 1 funil por anunciante analisado (teto de páginas) × passos.
+  const funis = Math.min(analisados, limits.funnelPagesPerInvestigation);
+  const funnelSteps = funis * limits.funnelMaxSteps;
+  entries.push({
+    provider: 'openrouter',
+    unit: 'analise-passo-funil',
+    quantity: funnelSteps,
+    estimatedUsd: funnelSteps * p.llmPerFunnelStepUsd,
+    note: `${funis} funis × até ${limits.funnelMaxSteps} passos`,
   });
 
   const total = entries.reduce((s, e) => s + e.estimatedUsd, 0);

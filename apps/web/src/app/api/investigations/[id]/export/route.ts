@@ -42,6 +42,13 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
     .eq('investigation_id', params.id);
   const adById = new Map((adsData ?? []).map((a) => [a.id, a]));
 
+  const [{ data: funnelsData }, { data: funnelStepsData }] = await Promise.all([
+    supabase.from('funnels').select('*').eq('investigation_id', params.id),
+    supabase.from('funnel_steps').select('*').eq('investigation_id', params.id).order('step_order'),
+  ]);
+  const funnels = funnelsData ?? [];
+  const funnelSteps = funnelStepsData ?? [];
+
   const cands = candidates ?? [];
   const evaluated = allCandidates ?? [];
   const crs = creatives ?? [];
@@ -117,6 +124,26 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
       );
     }
 
+    // Seção "Funil" (passos por página capturada).
+    lines.push('');
+    lines.push('# Funil');
+    lines.push(
+      ['funil_url', 'checkout', 'player', 'passo', 'tipo', 'url', 'bloqueado', 'screenshot', 'headline', 'preco', 'cta'].join(','),
+    );
+    for (const f of funnels) {
+      const fsteps = funnelSteps.filter((s) => s.funnel_id === f.id);
+      for (const s of fsteps) {
+        const a = s.analysis ?? {};
+        lines.push(
+          csvRow([
+            f.entry_url, nc(f.checkout_platform), nc(f.video_player),
+            s.step_order + 1, nc(a.tipo ?? s.step_type), s.url, s.blocked ? 'sim' : 'não',
+            s.screenshot_path ?? 'não coletado', a.headline ?? '', a.preco ?? '', a.cta ?? '',
+          ]),
+        );
+      }
+    }
+
     return new Response(lines.join('\n'), {
       headers: {
         'Content-Type': 'text/csv; charset=utf-8',
@@ -171,6 +198,29 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
       md.push(`- Arquivo de mídia: ${mediaPathOf(cr, c) || 'não coletado'}`);
       if (cr.media_type === 'video') md.push(`**Transcrição:** ${transcricaoOf(cr)}`);
       if (cr.analysis) md.push('```json\n' + JSON.stringify(cr.analysis, null, 2) + '\n```');
+    }
+  }
+
+  // Seção "Funil"
+  if (funnels.length > 0) md.push(`\n## Funil (${funnels.length})`);
+  for (const f of funnels) {
+    md.push(`\n### ${f.entry_url}`);
+    md.push(
+      `- Checkout: ${nc(f.checkout_platform)} · Player: ${nc(f.video_player)} · ` +
+        `Pixels: ${(f.pixels ?? []).map((p: any) => `${p.tipo}${p.id ? `(${p.id})` : ''}`).join(', ') || 'não coletado'}`,
+    );
+    if (f.blocked) md.push(`- ⚠️ possível bloqueio em algum passo`);
+    const tech = f.tech ?? {};
+    if (Array.isArray(tech.samePixelOtherDomain) && tech.samePixelOtherDomain.length)
+      md.push(`- ⚠️ mesmo pixel em outro domínio: ${tech.samePixelOtherDomain.map((x: any) => `${x.id}→${x.domain}`).join(', ')}`);
+    for (const s of funnelSteps.filter((x) => x.funnel_id === f.id)) {
+      const a = s.analysis ?? {};
+      md.push(`\n#### Passo ${s.step_order + 1} — ${nc(a.tipo ?? s.step_type)}${s.blocked ? ' (possível bloqueio)' : ''}`);
+      md.push(`- URL: ${s.url}`);
+      md.push(`- Screenshot: ${s.screenshot_path ?? 'não coletado'}`);
+      md.push(
+        `- Headline: ${nc(a.headline)} · Preço: ${nc(a.preco)} · Oferta: ${nc(a.oferta)} · CTA: ${nc(a.cta)}`,
+      );
     }
   }
 

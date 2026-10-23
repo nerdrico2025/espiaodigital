@@ -21,7 +21,7 @@ import { RealTranscriber } from '../apps/worker/src/providers/transcriber.js';
 import { RealMedia, type Uploader } from '../apps/worker/src/providers/media.js';
 import { filterOwnAds, mostFrequentPageId, adPageId } from '../apps/worker/src/pipeline/normalize.js';
 import { normalizeClaimedJob } from '../apps/worker/src/db/supabase-db.js';
-import { resolveLimits, clampInvestigationConfig, DEFAULT_LIMITS, classifyCandidate, estimateInvestigationCost, adEvidenceLevel, computeAdEvidences, summarizeCandidateAds, mediaFileName, temNarracao } from '@espiao/shared';
+import { resolveLimits, clampInvestigationConfig, DEFAULT_LIMITS, classifyCandidate, estimateInvestigationCost, adEvidenceLevel, computeAdEvidences, summarizeCandidateAds, mediaFileName, temNarracao, detectFunnelTech } from '@espiao/shared';
 
 const line = '─'.repeat(60);
 
@@ -260,6 +260,7 @@ async function main() {
   const limitsCost = resolveLimits({});
   const custoConc = estimateInvestigationCost(5, limitsCost, 'concorrentes');
   const custoAnun = estimateInvestigationCost(1, limitsCost, 'anunciante');
+  const custoPagina = estimateInvestigationCost(1, limitsCost, 'pagina');
   const costModeChecks: [string, boolean][] = [
     ['modo concorrentes inclui descoberta EXA', custoConc.entries.some((e) => e.provider === 'exa')],
     ['modo anunciante NÃO inclui EXA', !custoAnun.entries.some((e) => e.provider === 'exa')],
@@ -267,6 +268,27 @@ async function main() {
       !custoAnun.entries.some((e) => e.unit === 'extracao-candidatos')],
     ['modo anunciante custa menos que concorrentes', custoAnun.total < custoConc.total],
     ['modo anunciante tem linha Apify', custoAnun.entries.some((e) => e.provider === 'apify')],
+    ['concorrentes inclui análise de passos de funil', custoConc.entries.some((e) => e.unit === 'analise-passo-funil')],
+    ['modo pagina só tem funil (sem EXA/Apify)',
+      custoPagina.entries.every((e) => e.unit === 'analise-passo-funil')],
+  ];
+
+  // ── Detecção técnica de funil ──────────────────────────────
+  const tech = detectFunnelTech(
+    [
+      { url: 'https://connect.facebook.net/en_US/fbevents.js' },
+      { url: 'https://scripts.converteai.net/abc/player.js' },
+      { url: 'https://pay.hotmart.com/checkout' },
+      { url: 'https://cdn.exemplo.com/video/master.m3u8' },
+    ],
+    `<script>fbq('init','123456789012345');</script><script src="https://www.googletagmanager.com/gtm.js?id=GTM-ABCD12"></script>`,
+  );
+  const funnelTechChecks: [string, boolean][] = [
+    ['detecta checkout Hotmart', tech.checkoutPlatform === 'Hotmart'],
+    ['detecta player VTurb/Converteai', tech.videoPlayer === 'VTurb/Converteai'],
+    ['detecta pixel Meta com id', tech.pixels.some((p) => p.tipo === 'meta' && p.id === '123456789012345')],
+    ['detecta GTM', tech.pixels.some((p) => p.tipo === 'gtm' && p.id === 'GTM-ABCD12')],
+    ['guarda manifest .m3u8 (não baixa)', tech.manifests.some((m) => m.endsWith('.m3u8'))],
   ];
 
   // ── Verificações (assert) ──────────────────────────────────
@@ -277,6 +299,7 @@ async function main() {
     ...adLevelChecks,
     ...mediaChecks,
     ...costModeChecks,
+    ...funnelTechChecks,
     ['investigação concluída', db.status === 'concluida'],
     ['selecionou exatamente 2 concorrentes', selected.length === 2],
     ['pelo menos 1 vídeo transcrito', transcribed.length >= 1],
@@ -284,6 +307,11 @@ async function main() {
     ['custo final > 0', (db.finalCost ?? 0) > 0],
     ['nenhum concorrente fraco incluído (todos passam evidência forte)',
       (selected as any[]).every((c) => c.evidence?.daysLive >= 30 && c.evidence?.maxVariations >= 3)],
+    ['capturou ao menos 1 funil', db.funnels.size >= 1],
+    ['funil gravou passos', db.funnelSteps.length >= 1],
+    ['funil detectou checkout (Hotmart no mock)',
+      [...db.funnels.values()].some((f: any) => f.checkoutPlatform === 'Hotmart')],
+    ['passo de checkout classificado', db.funnelSteps.some((s: any) => s.stepType === 'checkout')],
   ];
 
   console.log(`\n${line}\nVerificações:`);

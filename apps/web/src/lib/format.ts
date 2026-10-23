@@ -44,6 +44,7 @@ export function stepLabel(step: StepName | string): string {
     transcrever: 'Transcrever vídeos',
     analisar: 'Analisar com IA',
     consolidar: 'Consolidar',
+    capturar_funil: 'Capturar funil',
   };
   return labels[step] ?? step;
 }

@@ -33,6 +33,13 @@ const MODES: {
     fieldLabel: 'URL ou nome da empresa que você quer analisar',
     placeholder: 'ex.: https://zeely.ai / Zeely',
   },
+  {
+    value: 'pagina',
+    title: 'Analisar uma página/VSL',
+    hint: 'Captura e analisa o funil de uma página direta (pré-sell, LP, VSL, checkout) — sem Meta Ad Library.',
+    fieldLabel: 'URL da página/VSL que você quer analisar',
+    placeholder: 'ex.: https://pagina.com/vsl',
+  },
 ];
 
 // Campos de "Opções avançadas". A key casa com InvestigationConfig.
@@ -44,6 +51,7 @@ const ADVANCED_FIELDS: {
   { key: 'adsPerCandidate', label: 'Anúncios por candidato' },
   { key: 'maxVideos', label: 'Máximo de vídeos para transcrever' },
   { key: 'maxTranscriptionMinutes', label: 'Máximo de minutos de transcrição' },
+  { key: 'funnelPages', label: 'Máximo de páginas de funil' },
 ];
 
 export default function NewInvestigationPage() {
@@ -65,6 +73,7 @@ export default function NewInvestigationPage() {
     adsPerCandidate: String(INVESTIGATION_CONFIG_BOUNDS.adsPerCandidate.default),
     maxVideos: String(INVESTIGATION_CONFIG_BOUNDS.maxVideos.default),
     maxTranscriptionMinutes: String(INVESTIGATION_CONFIG_BOUNDS.maxTranscriptionMinutes.default),
+    funnelPages: String(INVESTIGATION_CONFIG_BOUNDS.funnelPages.default),
   });
 
   // Config limpa (campos vazios omitidos → caem no padrão) para envio e estimativa.
@@ -103,9 +112,15 @@ export default function NewInvestigationPage() {
         {/* Seletor de modo */}
         <div>
           <label className="label">O que você quer fazer?</label>
-          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
             {MODES.map((m) => {
               const active = m.value === mode;
+              const mini =
+                m.value === 'concorrentes'
+                  ? 'Acha os concorrentes da referência'
+                  : m.value === 'anunciante'
+                    ? 'Só a empresa informada'
+                    : 'Só uma página/VSL';
               return (
                 <button
                   type="button"
@@ -118,9 +133,7 @@ export default function NewInvestigationPage() {
                   }`}
                 >
                   <div className="font-medium">{m.title}</div>
-                  <div className={`mt-0.5 text-xs ${active ? 'text-brand' : 'text-gray-500'}`}>
-                    {m.value === 'concorrentes' ? 'Acha os concorrentes da referência' : 'Só a empresa informada'}
-                  </div>
+                  <div className={`mt-0.5 text-xs ${active ? 'text-brand' : 'text-gray-500'}`}>{mini}</div>
                 </button>
               );
             })}
@@ -163,15 +176,18 @@ export default function NewInvestigationPage() {
           )}
         </div>
 
-        <label className="flex items-center gap-2 text-sm">
-          <input
-            type="checkbox"
-            checked={onlyActive}
-            onChange={(e) => setOnlyActive(e.target.checked)}
-          />
-          Só anúncios ativos
-        </label>
+        {mode !== 'pagina' && (
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={onlyActive}
+              onChange={(e) => setOnlyActive(e.target.checked)}
+            />
+            Só anúncios ativos
+          </label>
+        )}
 
+        {mode !== 'pagina' && (
         <details className="rounded-lg border border-gray-200 p-3">
           <summary className="cursor-pointer select-none text-sm font-medium text-gray-700">
             Opções avançadas
@@ -205,6 +221,7 @@ export default function NewInvestigationPage() {
             })}
           </div>
         </details>
+        )}
 
         <div className="rounded-lg bg-brand-soft p-3 text-sm">
           <div className="font-medium text-brand">Custo estimado (teto): {usdFmt(estimate.total)}</div>

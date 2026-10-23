@@ -405,6 +405,105 @@ export class SupabaseDb implements Db {
     }));
   }
 
+  // ── Funil (fase 05) ──
+  async uploadMedia(storagePath: string, data: Buffer | string, contentType: string): Promise<void> {
+    const body = typeof data === 'string' ? Buffer.from(data, 'utf8') : data;
+    const { error } = await this.sb.storage
+      .from('creatives')
+      .upload(storagePath, body, { contentType, upsert: true });
+    if (error) throw new Error(`uploadMedia ${storagePath}: ${error.message}`);
+  }
+
+  async insertFunnel(input: {
+    investigationId: string;
+    candidateId: string | null;
+    adId: string | null;
+    entryUrl: string;
+    domain: string | null;
+  }): Promise<{ id: string }> {
+    const data = (await this.must(
+      await this.sb
+        .from('funnels')
+        .insert({
+          investigation_id: input.investigationId,
+          candidate_id: input.candidateId,
+          ad_id: input.adId,
+          entry_url: input.entryUrl,
+          domain: input.domain,
+          status: 'rodando',
+        })
+        .select('id')
+        .single(),
+      'insertFunnel',
+    )) as any;
+    return { id: data.id };
+  }
+
+  async updateFunnel(funnelId: string, patch: Record<string, any>): Promise<void> {
+    const upd: Record<string, unknown> = {};
+    if ('status' in patch) upd.status = patch.status;
+    if ('checkoutPlatform' in patch) upd.checkout_platform = patch.checkoutPlatform;
+    if ('videoPlayer' in patch) upd.video_player = patch.videoPlayer;
+    if ('pixels' in patch) upd.pixels = patch.pixels;
+    if ('manifests' in patch) upd.manifests = patch.manifests;
+    if ('tech' in patch) upd.tech = patch.tech;
+    if ('blocked' in patch) upd.blocked = patch.blocked;
+    const { error } = await this.sb.from('funnels').update(upd).eq('id', funnelId);
+    if (error) throw new Error(`updateFunnel: ${error.message}`);
+  }
+
+  async insertFunnelStep(input: {
+    funnelId: string;
+    investigationId: string;
+    order: number;
+    stepType: string | null;
+    url: string;
+    screenshotPath: string | null;
+    htmlPath: string | null;
+    textPath: string | null;
+    requests: unknown[];
+    analysis: unknown;
+    blocked: boolean;
+    loadMs: number | null;
+  }): Promise<{ id: string }> {
+    const data = (await this.must(
+      await this.sb
+        .from('funnel_steps')
+        .insert({
+          funnel_id: input.funnelId,
+          investigation_id: input.investigationId,
+          step_order: input.order,
+          step_type: input.stepType,
+          url: input.url,
+          screenshot_path: input.screenshotPath,
+          html_path: input.htmlPath,
+          text_path: input.textPath,
+          requests: input.requests,
+          analysis: input.analysis,
+          blocked: input.blocked,
+          load_ms: input.loadMs,
+        })
+        .select('id')
+        .single(),
+      'insertFunnelStep',
+    )) as any;
+    return { id: data.id };
+  }
+
+  async getFunnelPixelIndex(): Promise<{ id: string; domain: string }[]> {
+    const { data, error } = await this.sb.from('funnels').select('domain, pixels');
+    if (error) throw new Error(`getFunnelPixelIndex: ${error.message}`);
+    const out: { id: string; domain: string }[] = [];
+    for (const row of (data as any[]) ?? []) {
+      const domain = row.domain as string | null;
+      if (!domain) continue;
+      for (const px of (row.pixels as any[]) ?? []) {
+        if (px?.id) out.push({ id: String(px.id), domain });
+      }
+    }
+    return out;
+  }
+
   async saveCandidateSummary(
     candidateId: string,
     s: { summary: string; hookPatterns: string[]; anglePatterns: string[] },

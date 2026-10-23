@@ -110,6 +110,10 @@ export interface InvestigationLimits {
   maxTranscribedMinutes: number;
   /** Pausa entre chamadas Apify (ms), para respeitar rate limit. */
   apifyPauseMs: number;
+  /** Máximo de páginas/funis capturados por investigação. */
+  funnelPagesPerInvestigation: number;
+  /** Máximo de passos seguidos por funil (pré-sell → checkout). */
+  funnelMaxSteps: number;
 }
 
 export const DEFAULT_LIMITS: InvestigationLimits = {
@@ -121,6 +125,8 @@ export const DEFAULT_LIMITS: InvestigationLimits = {
   maxVideosPerInvestigation: 15,
   maxTranscribedMinutes: 90,
   apifyPauseMs: 1500,
+  funnelPagesPerInvestigation: 6,
+  funnelMaxSteps: 6,
 };
 
 // ─────────────────────────────────────────────────────────────
@@ -137,6 +143,8 @@ export interface InvestigationConfig {
   maxVideos?: number;
   /** Máximo de minutos de transcrição na investigação. */
   maxTranscriptionMinutes?: number;
+  /** Máximo de páginas/funis capturados na investigação. */
+  funnelPages?: number;
 }
 
 /** Faixas e padrões de teste do formulário "Opções avançadas". */
@@ -145,6 +153,7 @@ export const INVESTIGATION_CONFIG_BOUNDS = {
   adsPerCandidate: { min: 10, max: 100, default: 30 },
   maxVideos: { min: 0, max: 30, default: 3 },
   maxTranscriptionMinutes: { min: 0, max: 180, default: 15 },
+  funnelPages: { min: 1, max: 20, default: 6 },
 } as const;
 
 type ConfigField = keyof typeof INVESTIGATION_CONFIG_BOUNDS;
@@ -190,6 +199,7 @@ export function resolveLimits(config?: InvestigationConfig | null): Investigatio
     adsPerCandidate: numOr(c.adsPerCandidate, base.adsPerCandidate),
     maxVideosPerInvestigation: numOr(c.maxVideos, base.maxVideosPerInvestigation),
     maxTranscribedMinutes: numOr(c.maxTranscriptionMinutes, base.maxTranscribedMinutes),
+    funnelPagesPerInvestigation: numOr(c.funnelPages, base.funnelPagesPerInvestigation),
   };
 }
 
@@ -208,4 +218,6 @@ export const PRICE_REFERENCE = {
   llmDiscoveryUsd: 0.02,
   // EXA busca por query.
   exaPerSearchUsd: 0.005,
+  // Estimativa por passo de funil analisado (uma chamada LLM).
+  llmPerFunnelStepUsd: 0.01,
 };

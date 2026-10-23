@@ -8,10 +8,14 @@ import {
   adDaysLive,
   temNarracao,
   SEM_NARRACAO_MSG,
+  detectFunnelTech,
+  funnelDestKey,
+  funnelDomain,
   round,
   type InvestigationLimits,
   type InvestigationMode,
   type NormalizedAd,
+  type RequestLog,
   type StepName,
 } from '@espiao/shared';
 import type { AdRow, CandidateRow, Deps } from '../interfaces.js';
@@ -62,7 +66,8 @@ export async function runInvestigation(deps: Deps, investigationId: string): Pro
     country: inv.country,
     onlyActive: inv.onlyActive,
     competitors: inv.competitors,
-    mode: inv.mode === 'anunciante' ? 'anunciante' : 'concorrentes',
+    mode:
+      inv.mode === 'anunciante' ? 'anunciante' : inv.mode === 'pagina' ? 'pagina' : 'concorrentes',
     reference: inv.query,
     audioPaths: new Map(),
   };
@@ -79,6 +84,7 @@ export async function runInvestigation(deps: Deps, investigationId: string): Pro
     transcrever: stepTranscrever,
     analisar: stepAnalisar,
     consolidar: stepConsolidar,
+    capturar_funil: stepCapturarFunil,
   };
 
   for (const step of STEP_ORDER) {
@@ -119,6 +125,18 @@ async function runStep(
 // ── 1. Descobrir candidatos ──────────────────────────────────
 async function stepDescobrir(deps: Deps, ctx: Ctx): Promise<unknown> {
   const inv = await deps.db.getInvestigation(ctx.investigationId);
+
+  // Modo "pagina": análise direta de uma página/VSL — sem candidatos/anúncios.
+  // As etapas de ads ficam vazias naturalmente; só "capturar_funil" trabalha.
+  if (ctx.mode === 'pagina') {
+    await deps.db.addEvent(
+      ctx.investigationId,
+      'descobrir',
+      'rodando',
+      `Modo "analisar página": sem descoberta; captura direta de ${inv.query.trim()}.`,
+    );
+    return { modo: 'pagina', candidatos: 0 };
+  }
 
   // Modo "anunciante": NÃO há descoberta. A empresa informada é o único candidato.
   if (ctx.mode === 'anunciante') {
@@ -662,6 +680,150 @@ async function stepConsolidar(deps: Deps, ctx: Ctx): Promise<unknown> {
   const total = await deps.db.getCostTotal(ctx.investigationId);
   await deps.db.setFinalCost(ctx.investigationId, round(total));
   return { concorrentes: selected.length, custoUsd: round(total) };
+}
+
+// ── 9. Capturar funil (páginas de destino) ───────────────────
+async function stepCapturarFunil(deps: Deps, ctx: Ctx): Promise<unknown> {
+  const inv = await deps.db.getInvestigation(ctx.investigationId);
+  const maxSteps = ctx.limits.funnelMaxSteps;
+  const pageCap = ctx.limits.funnelPagesPerInvestigation;
+
+  // Monta a lista de alvos (url + candidato + anúncio), deduplicada por destino.
+  type Target = { url: string; candidateId: string | null; adId: string | null };
+  const targets: Target[] = [];
+  const seen = new Set<string>();
+  const add = (url: string | null, candidateId: string | null, adId: string | null) => {
+    if (!url) return;
+    const key = funnelDestKey(url);
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+    targets.push({ url, candidateId, adId });
+  };
+
+  if (ctx.mode === 'pagina') {
+    add(inv.query.trim(), null, null);
+  } else {
+    const champions = await deps.db.getChampionAds(ctx.investigationId);
+    for (const a of champions) {
+      if (targets.length >= pageCap) break;
+      add(a.ad.linkUrl, a.candidateId, a.id);
+    }
+  }
+  const limited = targets.slice(0, pageCap);
+
+  let capturados = 0;
+  let falhas = 0;
+  const pixelIndex = await deps.db.getFunnelPixelIndex();
+
+  for (const t of limited) {
+    const domain = funnelDomain(t.url);
+    const { id: funnelId } = await deps.db.insertFunnel({
+      investigationId: ctx.investigationId,
+      candidateId: t.candidateId,
+      adId: t.adId,
+      entryUrl: t.url,
+      domain,
+    });
+
+    try {
+      const { steps } = await deps.funnel.capture(t.url, { maxSteps, country: ctx.country });
+      const allReq: RequestLog[] = [];
+      const htmlParts: string[] = [];
+      let anyBlocked = false;
+
+      for (const s of steps) {
+        const base = `${ctx.investigationId}/funnel/${funnelId}/${s.order}`;
+        let screenshotPath: string | null = null;
+        let htmlPath: string | null = null;
+        let textPath: string | null = null;
+        if (s.screenshot) {
+          screenshotPath = `${base}.png`;
+          await deps.db.uploadMedia(screenshotPath, s.screenshot, 'image/png');
+        }
+        if (s.html) {
+          htmlPath = `${base}.html`;
+          await deps.db.uploadMedia(htmlPath, s.html, 'text/html; charset=utf-8');
+          htmlParts.push(s.html);
+        }
+        if (s.text) {
+          textPath = `${base}.md`;
+          await deps.db.uploadMedia(textPath, s.text, 'text/markdown; charset=utf-8');
+        }
+        for (const r of s.requests) allReq.push(r);
+        if (s.blocked) anyBlocked = true;
+
+        // Análise LLM do passo (dado ausente = null; não inventa).
+        let analysis = null;
+        try {
+          const a = await deps.analyzer.analyzeFunnelStep({
+            url: s.url,
+            text: s.text,
+            stepTypeGuess: s.stepTypeGuess,
+          });
+          analysis = a.analysis;
+          for (const c of a.cost) await deps.db.addCost(ctx.investigationId, c);
+        } catch (e) {
+          deps.log.warn(`Análise de passo falhou (funil ${funnelId})`, errMessage(e));
+        }
+
+        await deps.db.insertFunnelStep({
+          funnelId,
+          investigationId: ctx.investigationId,
+          order: s.order,
+          stepType: analysis?.tipo ?? s.stepTypeGuess ?? null,
+          url: s.url,
+          screenshotPath,
+          htmlPath,
+          textPath,
+          requests: s.requests.slice(0, 200),
+          analysis,
+          blocked: s.blocked,
+          loadMs: s.loadMs,
+        });
+      }
+
+      // Detecção técnica (determinística) + flag de pixel em outro domínio.
+      const tech = detectFunnelTech(allReq, htmlParts.join('\n'));
+      const otherDomain = tech.pixels
+        .filter((p) => p.id)
+        .flatMap((p) =>
+          pixelIndex
+            .filter((x) => x.id === p.id && x.domain !== domain)
+            .map((x) => ({ id: p.id!, domain: x.domain })),
+        );
+      if (otherDomain.length) tech.samePixelOtherDomain = otherDomain;
+      // Alimenta o índice para os próximos funis desta mesma execução.
+      for (const p of tech.pixels) if (p.id && domain) pixelIndex.push({ id: p.id, domain });
+
+      await deps.db.updateFunnel(funnelId, {
+        status: 'concluida',
+        checkoutPlatform: tech.checkoutPlatform,
+        videoPlayer: tech.videoPlayer,
+        pixels: tech.pixels,
+        manifests: tech.manifests,
+        tech,
+        blocked: anyBlocked,
+      });
+      capturados++;
+    } catch (e) {
+      falhas++;
+      await deps.db.updateFunnel(funnelId, { status: 'falhou', blocked: true });
+      await deps.db.addEvent(
+        ctx.investigationId,
+        'capturar_funil',
+        'rodando',
+        `⚠️ Funil "${t.url}" falhou: ${errMessage(e)}`,
+      );
+      deps.log.warn(`Captura de funil falhou (${t.url})`, errMessage(e));
+    }
+    await sleep(1200); // pausa curta entre capturas
+  }
+
+  // Atualiza o custo final incluindo os passos de funil (consolidar roda antes).
+  const total = await deps.db.getCostTotal(ctx.investigationId);
+  await deps.db.setFinalCost(ctx.investigationId, round(total));
+
+  return { funis: limited.length, capturados, falhas };
 }
 
 // ── helpers ──────────────────────────────────────────────────

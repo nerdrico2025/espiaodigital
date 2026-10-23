@@ -17,6 +17,11 @@ COPY apps/web/package.json apps/web/
 COPY apps/worker/package.json apps/worker/
 RUN npm ci
 
+# Chromium do Playwright + libs do sistema (só o Chromium, p/ não inflar demais).
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+RUN npx --yes playwright@1.48.2 install --with-deps chromium \
+  && apt-get clean && rm -rf /var/lib/apt/lists/*
+
 # Código.
 COPY tsconfig.base.json ./
 COPY packages ./packages

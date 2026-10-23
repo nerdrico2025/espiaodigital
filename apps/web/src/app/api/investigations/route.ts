@@ -14,12 +14,13 @@ export async function POST(req: Request) {
   if (!body?.query || typeof body.query !== 'string') {
     return NextResponse.json({ error: 'Informe o nicho, app ou URL.' }, { status: 400 });
   }
-  const mode = body.mode === 'anunciante' ? 'anunciante' : 'concorrentes';
+  const mode =
+    body.mode === 'anunciante' ? 'anunciante' : body.mode === 'pagina' ? 'pagina' : 'concorrentes';
   const country = String(body.country || 'BR').toUpperCase();
   const onlyActive = body.onlyActive !== false;
-  // No modo "anunciante" há uma única empresa (sem descoberta de concorrentes).
+  // "anunciante"/"pagina": um único alvo (sem descoberta de concorrentes).
   const competitors =
-    mode === 'anunciante' ? 1 : Math.max(1, Math.min(20, Number(body.competitors) || 5));
+    mode === 'concorrentes' ? Math.max(1, Math.min(20, Number(body.competitors) || 5)) : 1;
 
   // Opções avançadas: valida/clampa e deixa só os campos preenchidos.
   const config = clampInvestigationConfig(body.config);

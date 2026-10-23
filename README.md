@@ -11,6 +11,11 @@ MVP de uso pessoal (um único usuário) que:
 > ⚠️ **Uso responsável.** O app usa apenas dados **públicos** da Meta Ad Library.
 > Nada de login falso, bypass de cloaker, proxies ou scraping de áreas privadas.
 > As mídias baixadas são para **análise interna**, não para republicação.
+>
+> 🧭 **Funil (fase 05).** A captura de páginas acessa só **conteúdo público**, como um
+> visitante comum de celular. **Para no checkout**: nunca preenche dados reais, não
+> compra, não cria conta, não submete formulário, não persiste lead. Os **prints, HTML e
+> análises do funil são para análise interna**, não para republicação.
 
 ---
 

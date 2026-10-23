@@ -5,6 +5,7 @@ import type {
   Candidate,
   CostEntry,
   CreativeAnalysis,
+  FunnelStepAnalysis,
   NormalizedAd,
   StepName,
 } from '@espiao/shared';
@@ -14,12 +15,14 @@ import type {
   Analyzer,
   CandidateRow,
   CandidateScorePatch,
+  CapturedStep,
   Clock,
   CreativeFull,
   CreativeRow,
   Db,
   Deps,
   Discovery,
+  FunnelCapturer,
   Logger,
   MediaPipeline,
   Transcriber,
@@ -185,6 +188,34 @@ export class MemoryDb implements Db {
     const c = this.candidates.get(candidateId);
     if (c) Object.assign(c, s);
   }
+
+  // ── Funil ──
+  funnels = new Map<string, any>();
+  funnelSteps: any[] = [];
+  async uploadMedia() {
+    /* no-op em memória */
+  }
+  async insertFunnel(input: any): Promise<{ id: string }> {
+    const fid = id('funnel');
+    this.funnels.set(fid, { id: fid, ...input, pixels: [], steps: 0 });
+    return { id: fid };
+  }
+  async updateFunnel(funnelId: string, patch: any) {
+    const f = this.funnels.get(funnelId);
+    if (f) Object.assign(f, patch);
+  }
+  async insertFunnelStep(input: any): Promise<{ id: string }> {
+    const sid = id('fstep');
+    this.funnelSteps.push({ id: sid, ...input });
+    return { id: sid };
+  }
+  async getFunnelPixelIndex(): Promise<{ id: string; domain: string }[]> {
+    const out: { id: string; domain: string }[] = [];
+    for (const f of this.funnels.values()) {
+      for (const px of f.pixels ?? []) if (px?.id && f.domain) out.push({ id: String(px.id), domain: f.domain });
+    }
+    return out;
+  }
 }
 
 // ── Mock providers ───────────────────────────────────────────
@@ -302,6 +333,58 @@ export class MockAnalyzer implements Analyzer {
     };
     return { analysis, cost: [{ provider: 'openrouter', unit: 'analise-criativo', quantity: 1, estimatedUsd: 0.01 }] };
   }
+
+  async analyzeFunnelStep(input: { url: string; text: string | null; stepTypeGuess?: string | null }) {
+    const isCheckout = input.stepTypeGuess === 'checkout';
+    const analysis: FunnelStepAnalysis = {
+      tipo: isCheckout ? 'checkout' : 'lp',
+      headline: isCheckout ? null : 'Oferta incrível',
+      promessa: isCheckout ? null : 'Resultado em 7 dias',
+      mecanismo: null,
+      prova: null,
+      oferta: isCheckout ? 'Produto principal' : null,
+      preco: isCheckout ? 'R$ 97' : null,
+      bonus: null,
+      garantia: null,
+      urgencia: null,
+      cta: isCheckout ? 'Finalizar compra' : 'Comprar agora',
+    };
+    return { analysis, cost: [{ provider: 'openrouter', unit: 'analise-passo-funil', quantity: 1, estimatedUsd: 0.01 }] as CostEntry[] };
+  }
+}
+
+export class MockFunnel implements FunnelCapturer {
+  async capture(entryUrl: string, opts: { maxSteps: number; country: string }) {
+    void opts;
+    const steps: CapturedStep[] = [
+      {
+        order: 0,
+        url: entryUrl,
+        stepTypeGuess: null,
+        screenshot: Buffer.from('mock-png'),
+        html: '<html><body><h1>Oferta</h1><a href="https://pay.hotmart.com/x">Comprar agora</a></body></html>',
+        text: '# Oferta incrível\nMétodo comprovado. Clique em comprar agora.',
+        requests: [
+          { url: 'https://connect.facebook.net/en_US/fbevents.js', resourceType: 'script' },
+          { url: 'https://scripts.converteai.net/player.js', resourceType: 'script' },
+        ],
+        blocked: false,
+        loadMs: 1200,
+      },
+      {
+        order: 1,
+        url: 'https://pay.hotmart.com/x',
+        stepTypeGuess: 'checkout',
+        screenshot: Buffer.from('mock-png-2'),
+        html: '<html><body>Checkout Hotmart</body></html>',
+        text: 'Finalizar compra — R$ 97',
+        requests: [{ url: 'https://pay.hotmart.com/checkout.js', resourceType: 'script' }],
+        blocked: false,
+        loadMs: 900,
+      },
+    ];
+    return { steps };
+  }
 }
 
 export const consoleLogger: Logger = {
@@ -332,6 +415,7 @@ export function makeMockDeps(opts?: {
     media: new MockMedia(),
     transcriber: new MockTranscriber(opts?.provider ?? 'openai'),
     analyzer: new MockAnalyzer(),
+    funnel: new MockFunnel(),
     clock: fixedClock(now),
     log: consoleLogger,
   };

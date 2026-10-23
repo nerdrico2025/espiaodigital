@@ -8,7 +8,8 @@ export type StepName =
   | 'baixar_midia'
   | 'transcrever'
   | 'analisar'
-  | 'consolidar';
+  | 'consolidar'
+  | 'capturar_funil';
 
 export const STEP_ORDER: StepName[] = [
   'descobrir',
@@ -19,6 +20,7 @@ export const STEP_ORDER: StepName[] = [
   'transcrever',
   'analisar',
   'consolidar',
+  'capturar_funil',
 ];
 
 export const STEP_LABELS: Record<StepName, string> = {
@@ -30,6 +32,7 @@ export const STEP_LABELS: Record<StepName, string> = {
   transcrever: 'Transcrever vídeos',
   analisar: 'Analisar com IA',
   consolidar: 'Consolidar resumo',
+  capturar_funil: 'Capturar funil (páginas)',
 };
 
 export type JobStatus = 'pendente' | 'rodando' | 'concluida' | 'falhou';
@@ -40,8 +43,9 @@ export type EvidenceLevel = 'alto' | 'medio' | 'baixo';
  * Modo da investigação:
  * - 'concorrentes': descobre concorrentes da referência informada (padrão).
  * - 'anunciante': analisa só a empresa informada (sem descoberta).
+ * - 'pagina': analisa só uma página/VSL informada (captura de funil direta).
  */
-export type InvestigationMode = 'concorrentes' | 'anunciante';
+export type InvestigationMode = 'concorrentes' | 'anunciante' | 'pagina';
 
 export interface InvestigationInput {
   /** Nome do app/nicho OU URL do concorrente de referência. */
@@ -204,4 +208,48 @@ export interface ConsolidatedCompetitor {
   hookPatterns: string[];
   anglePatterns: string[];
   creativeCount: number;
+}
+
+// ── Funil: captura e análise de páginas (fase 05) ────────────
+
+export type FunnelStepType =
+  | 'pre_sell'
+  | 'lp'
+  | 'quiz'
+  | 'vsl'
+  | 'checkout'
+  | 'upsell'
+  | 'obrigado'
+  | 'outro';
+
+/** Análise por passo (LLM). Dado ausente = null; nunca inventar. */
+export interface FunnelStepAnalysis {
+  tipo: FunnelStepType | null;
+  headline: string | null;
+  promessa: string | null;
+  mecanismo: string | null;
+  prova: string | null;
+  oferta: string | null;
+  preco: string | null;
+  bonus: string | null;
+  garantia: string | null;
+  urgencia: string | null;
+  cta: string | null;
+}
+
+/** Um pixel detectado (plataforma + id quando houver). */
+export interface PixelHit {
+  tipo: string; // meta | gtm | ga4 | tiktok | hotjar | clarity | email | outro
+  id: string | null;
+}
+
+/** Detecção técnica por funil (a partir de requisições + HTML). */
+export interface FunnelTech {
+  checkoutPlatform: string | null;
+  videoPlayer: string | null;
+  pixels: PixelHit[];
+  /** URLs de manifest de vídeo (.m3u8/.mpd) — guardadas, não baixadas aqui. */
+  manifests: string[];
+  /** IDs de pixel já vistos em OUTRO domínio (sinal de mesmo dono/operação). */
+  samePixelOtherDomain?: { id: string; domain: string }[];
 }

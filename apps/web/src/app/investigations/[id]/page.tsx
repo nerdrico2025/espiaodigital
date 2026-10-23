@@ -50,6 +50,19 @@ export default async function InvestigationDetail({ params }: { params: { id: st
     .eq('investigation_id', params.id);
   const adById = new Map((adsData ?? []).map((a) => [a.id, a]));
 
+  // Funil (fase 05): funis + passos em ordem.
+  const [{ data: funnelsData }, { data: funnelStepsData }] = await Promise.all([
+    supabase.from('funnels').select('*').eq('investigation_id', params.id),
+    supabase
+      .from('funnel_steps')
+      .select('*')
+      .eq('investigation_id', params.id)
+      .order('step_order'),
+  ]);
+  const funnels = funnelsData ?? [];
+  const funnelSteps = funnelStepsData ?? [];
+  const candNameById = new Map((allCandidates ?? []).map((c) => [c.id, c.name as string]));
+
   const cands = candidates ?? [];
   const evaluated = allCandidates ?? [];
   const crs = creatives ?? [];
@@ -67,7 +80,10 @@ export default async function InvestigationDetail({ params }: { params: { id: st
   // URLs assinadas para a mídia privada (via service role, server-side).
   const admin = createAdminClient();
   const signed = new Map<string, string>();
-  const paths = crs.map((c) => c.storage_path).filter(Boolean) as string[];
+  const paths = [
+    ...crs.map((c) => c.storage_path),
+    ...funnelSteps.map((s) => s.screenshot_path),
+  ].filter(Boolean) as string[];
   if (paths.length) {
     const { data } = await admin.storage.from('creatives').createSignedUrls(paths, 3600);
     for (const s of data ?? []) if (s.path && s.signedUrl) signed.set(s.path, s.signedUrl);
@@ -367,8 +383,157 @@ export default async function InvestigationDetail({ params }: { params: { id: st
               );
             })
           )}
+
+          {/* ── Funil: captura e análise de páginas ── */}
+          <div className="card">
+            <h2 className="mb-1 text-lg font-semibold">Funil ({funnels.length})</h2>
+            <p className="mb-3 text-xs text-gray-500">
+              Páginas de destino capturadas como visitante de celular no Brasil (só conteúdo
+              público; paramos no checkout, sem comprar nem preencher dados).
+            </p>
+            {funnels.length === 0 ? (
+              <p className="text-sm text-gray-500">
+                {running
+                  ? 'Processando… o funil aparece ao final da captura.'
+                  : 'Nenhum funil capturado ainda.'}
+              </p>
+            ) : (
+              funnels.map((f) => (
+                <FunnelCard
+                  key={f.id}
+                  funnel={f}
+                  steps={funnelSteps.filter((s) => s.funnel_id === f.id)}
+                  signed={signed}
+                  candidateName={f.candidate_id ? candNameById.get(f.candidate_id) ?? null : null}
+                />
+              ))
+            )}
+          </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+const STEP_TYPE_PT: Record<string, string> = {
+  pre_sell: 'Pré-sell',
+  lp: 'Landing page',
+  quiz: 'Quiz',
+  vsl: 'VSL',
+  checkout: 'Checkout',
+  upsell: 'Upsell',
+  obrigado: 'Obrigado',
+  outro: 'Outro',
+};
+
+function FunnelCard({
+  funnel,
+  steps,
+  signed,
+  candidateName,
+}: {
+  funnel: any;
+  steps: any[];
+  signed: Map<string, string>;
+  candidateName: string | null;
+}) {
+  const tech = funnel.tech ?? {};
+  const pixels: { tipo: string; id: string | null }[] = funnel.pixels ?? tech.pixels ?? [];
+  const manifests: string[] = funnel.manifests ?? tech.manifests ?? [];
+  const samePixel: { id: string; domain: string }[] = tech.samePixelOtherDomain ?? [];
+  return (
+    <div className="mb-4 rounded-lg border border-gray-200 p-3">
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <div className="text-sm font-medium">
+            {candidateName ? `${candidateName} · ` : ''}
+            <span className="break-all text-gray-600">{funnel.entry_url}</span>
+          </div>
+          <div className="mt-1 flex flex-wrap gap-1 text-[11px] text-gray-500">
+            <AdLabel label="checkout" value={funnel.checkout_platform || undefined} />
+            <AdLabel label="player" value={funnel.video_player || undefined} />
+            <AdLabel label="pixels" value={pixels.length || undefined} />
+          </div>
+        </div>
+        {funnel.blocked && (
+          <span className="badge bg-amber-100 text-amber-800">possível bloqueio</span>
+        )}
+      </div>
+
+      {(pixels.length > 0 || manifests.length > 0 || samePixel.length > 0) && (
+        <div className="mb-3 space-y-1 text-xs text-gray-600">
+          {pixels.length > 0 && (
+            <div>
+              <span className="font-medium">Pixels:</span>{' '}
+              {pixels.map((p) => `${p.tipo}${p.id ? ` (${p.id})` : ''}`).join(', ')}
+            </div>
+          )}
+          {samePixel.length > 0 && (
+            <div className="text-amber-700">
+              ⚠️ Mesmo pixel em outro domínio: {samePixel.map((x) => `${x.id} → ${x.domain}`).join(', ')}
+            </div>
+          )}
+          {manifests.length > 0 && (
+            <div>
+              <span className="font-medium">Manifests de vídeo:</span> {manifests.length} (VSL — Prompt B)
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Timeline de passos */}
+      <ol className="space-y-3">
+        {steps.map((s) => {
+          const shot = s.screenshot_path ? signed.get(s.screenshot_path) : null;
+          const a = s.analysis ?? {};
+          const tipo = a.tipo ?? s.step_type;
+          return (
+            <li key={s.id} className="rounded border border-gray-100 p-2">
+              <div className="mb-1 flex items-center justify-between text-xs">
+                <span className="badge bg-gray-100 text-gray-700">
+                  {s.step_order + 1}. {tipo ? STEP_TYPE_PT[tipo] ?? tipo : 'não coletado'}
+                </span>
+                <span className="text-gray-400">{s.load_ms != null ? `${s.load_ms} ms` : ''}</span>
+              </div>
+              <p className="mb-2 break-all text-[11px] text-gray-400">{s.url}</p>
+              {s.blocked && (
+                <span className="badge mb-2 bg-amber-100 text-amber-800">possível bloqueio</span>
+              )}
+              {shot && (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img alt="print do passo" className="mb-2 w-full rounded border border-gray-200" src={shot} />
+              )}
+              <Expandable title="Análise da página">
+                <dl className="space-y-1 text-xs">
+                  {(
+                    [
+                      ['Headline', a.headline],
+                      ['Promessa', a.promessa],
+                      ['Mecanismo', a.mecanismo],
+                      ['Prova', a.prova],
+                      ['Oferta', a.oferta],
+                      ['Preço', a.preco],
+                      ['Bônus', a.bonus],
+                      ['Garantia', a.garantia],
+                      ['Urgência', a.urgencia],
+                      ['CTA', a.cta],
+                    ] as [string, unknown][]
+                  ).map(([k, v]) => (
+                    <div key={k}>
+                      <span className="font-medium">{k}:</span>{' '}
+                      {v == null || v === '' ? (
+                        <span className="text-gray-400">não coletado</span>
+                      ) : (
+                        String(v)
+                      )}
+                    </div>
+                  ))}
+                </dl>
+              </Expandable>
+            </li>
+          );
+        })}
+      </ol>
     </div>
   );
 }

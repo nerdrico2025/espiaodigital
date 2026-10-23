@@ -35,9 +35,6 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
   const { data: creatives } = await cq;
 
   const crs = creatives ?? [];
-  if (crs.length === 0) {
-    return NextResponse.json({ error: 'Nenhuma mídia baixada para empacotar.' }, { status: 404 });
-  }
 
   const [{ data: cands }, { data: ads }] = await Promise.all([
     supabase.from('candidates').select('id, name, domain').eq('investigation_id', params.id),
@@ -46,8 +43,27 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
   const candById = new Map((cands ?? []).map((c) => [c.id, c]));
   const adById = new Map((ads ?? []).map((a) => [a.id, a]));
 
+  // Funil: screenshots dos passos (respeita o filtro por candidato).
+  let fq = supabase
+    .from('funnels')
+    .select('id, candidate_id, domain')
+    .eq('investigation_id', params.id);
+  if (candidateFilter) fq = fq.eq('candidate_id', candidateFilter);
+  const { data: funnels } = await fq;
+  const funnelById = new Map((funnels ?? []).map((f) => [f.id, f]));
+  const { data: fstepsAll } = await supabase
+    .from('funnel_steps')
+    .select('id, funnel_id, step_order, screenshot_path')
+    .eq('investigation_id', params.id)
+    .not('screenshot_path', 'is', null)
+    .order('step_order');
+  const fsteps = (fstepsAll ?? []).filter((s) => funnelById.has(s.funnel_id));
+
   const admin = createAdminClient();
-  const paths = crs.map((c) => c.storage_path as string);
+  const paths = [
+    ...crs.map((c) => c.storage_path as string),
+    ...fsteps.map((s) => s.screenshot_path as string),
+  ];
   const { data: signedList } = await admin.storage.from('creatives').createSignedUrls(paths, 300);
   const signedByPath = new Map((signedList ?? []).map((s) => [s.path, s.signedUrl]));
 
@@ -71,6 +87,21 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
     });
     items.push({ cr, folder, fileName, url });
     totalBytes += await fileSize(url);
+  }
+
+  // Screenshots de funil: pasta funil/<anunciante-ou-dominio>/passo-N.png
+  const funnelItems: { name: string; url: string }[] = [];
+  for (const s of fsteps) {
+    const url = signedByPath.get(s.screenshot_path as string);
+    if (!url) continue;
+    const f = funnelById.get(s.funnel_id);
+    const sub = slug(f?.candidate_id ? candById.get(f.candidate_id)?.name ?? 'anunciante' : f?.domain ?? 'pagina');
+    funnelItems.push({ name: `funil/${sub}/passo-${s.step_order + 1}.png`, url });
+    totalBytes += await fileSize(url);
+  }
+
+  if (items.length === 0 && funnelItems.length === 0) {
+    return NextResponse.json({ error: 'Nenhuma mídia baixada para empacotar.' }, { status: 404 });
   }
 
   if (totalBytes > MAX_BYTES) {
@@ -103,6 +134,9 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
   async function* entries(): AsyncGenerator<ZipEntry> {
     for (const it of items) {
       yield { name: `${it.folder}/${it.fileName}`, data: streamBody(it.url) };
+    }
+    for (const fi of funnelItems) {
+      yield { name: fi.name, data: streamBody(fi.url) };
     }
     yield { name: 'transcricoes.md', data: mdBytes };
   }
