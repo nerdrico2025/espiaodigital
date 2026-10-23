@@ -26,6 +26,7 @@ export function estimateInvestigationCost(
       estimatedUsd: steps * p.llmPerFunnelStepUsd,
       note: `1 página, até ${steps} passos`,
     });
+    pushVslCost(entries, limits, 1);
     const total = entries.reduce((s, e) => s + e.estimatedUsd, 0);
     return { total: round(total), entries };
   }
@@ -94,8 +95,31 @@ export function estimateInvestigationCost(
     note: `${funis} funis × até ${limits.funnelMaxSteps} passos`,
   });
 
+  // Processamento de VSL (download + transcrição + mapeamento).
+  pushVslCost(entries, limits, limits.vslPerInvestigation);
+
   const total = entries.reduce((s, e) => s + e.estimatedUsd, 0);
   return { total: round(total), entries };
+}
+
+/** Adiciona as linhas de custo da VSL (transcrição por minuto + mapeamento LLM). */
+function pushVslCost(entries: CostEntry[], limits: InvestigationLimits, vsls: number): void {
+  const p = PRICE_REFERENCE;
+  if (vsls <= 0 || limits.vslTranscribedMinutes <= 0) return;
+  entries.push({
+    provider: 'transcription',
+    unit: 'minuto-vsl',
+    quantity: limits.vslTranscribedMinutes,
+    estimatedUsd: limits.vslTranscribedMinutes * p.whisperPerMinuteUsd,
+    note: `até ${vsls} VSL(s)`,
+  });
+  entries.push({
+    provider: 'openrouter',
+    unit: 'mapeamento-vsl',
+    quantity: vsls,
+    estimatedUsd: vsls * p.llmPerVslUsd,
+    note: '11 blocos + resumo',
+  });
 }
 
 export function round(n: number): number {

@@ -16,6 +16,8 @@ import type {
   NormalizedAd,
   RequestLog,
   StepName,
+  VslAnalysis,
+  VslSegment,
 } from '@espiao/shared';
 
 // ── Persistência ─────────────────────────────────────────────
@@ -151,6 +153,8 @@ export interface Db {
   // ── Funil (fase 05) ──
   /** Sobe um arquivo arbitrário ao bucket privado `creatives`. */
   uploadMedia(storagePath: string, data: Buffer | string, contentType: string): Promise<void>;
+  /** Lê um arquivo local e sobe ao bucket (para áudio/vídeo grandes). */
+  uploadMediaFromPath(storagePath: string, localPath: string, contentType: string): Promise<void>;
   insertFunnel(input: {
     investigationId: string;
     candidateId: string | null;
@@ -186,6 +190,27 @@ export interface Db {
   }): Promise<{ id: string }>;
   /** Índice de pixels já vistos (id + domínio) para sinalizar "mesmo pixel em outro domínio". */
   getFunnelPixelIndex(): Promise<{ id: string; domain: string }[]>;
+
+  // ── VSL (fase 06) ──
+  /** Alvos de VSL: passos com tipo 'vsl' ou funil com player/manifest. */
+  getVslTargets(investigationId: string): Promise<VslTarget[]>;
+  insertVsl(input: {
+    investigationId: string;
+    funnelId: string | null;
+    funnelStepId: string | null;
+    sourceUrl: string;
+    player: string | null;
+    manifestUrl: string | null;
+  }): Promise<{ id: string }>;
+  updateVsl(vslId: string, patch: Record<string, unknown>): Promise<void>;
+}
+
+export interface VslTarget {
+  funnelId: string | null;
+  funnelStepId: string | null;
+  url: string;
+  player: string | null;
+  manifestUrl: string | null;
 }
 
 // ── Provedores externos ──────────────────────────────────────
@@ -269,6 +294,46 @@ export interface Analyzer {
     text: string | null;
     stepTypeGuess?: string | null;
   }): Promise<{ analysis: FunnelStepAnalysis; cost: CostEntry[] }>;
+  /** Mapeia a VSL em 11 blocos + resumo executivo (citações literais). */
+  analyzeVsl(input: {
+    transcription: string;
+    segments: VslSegment[];
+    parcial: boolean;
+    ctaInfo?: { cta: string; aparecemSeg: number | null }[] | null;
+  }): Promise<{ analysis: VslAnalysis; cost: CostEntry[] }>;
+}
+
+// ── VSL: download + preparação de mídia ──────────────────────
+export interface VslChunk {
+  path: string; // arquivo local do trecho (áudio)
+  offsetSec: number; // deslocamento desde o início
+  durationSec: number;
+}
+
+export interface VslExtractResult {
+  ok: boolean;
+  failReason: string | null;
+  player: string | null;
+  manifestUrl: string | null;
+  durationSeconds: number | null;
+  tooLong: boolean;
+  /** Caminho local do áudio completo (mp3 mono 16k) para subir ao Storage. */
+  audioPath: string | null;
+  /** Caminho local do vídeo reduzido (480p) se ≤150MB; senão null. */
+  videoPath: string | null;
+  videoBytes: number | null;
+  /** Trechos de áudio (≤10 min) para transcrição, com deslocamento. */
+  chunks: VslChunk[];
+}
+
+export interface VslExtractor {
+  /** Baixa a VSL (manifest/URL), extrai áudio e divide em trechos. */
+  extract(input: {
+    pageUrl: string;
+    manifestUrl: string | null;
+    player: string | null;
+    maxMinutes: number;
+  }): Promise<VslExtractResult>;
 }
 
 // ── Captura de funil (Playwright) ────────────────────────────
@@ -310,6 +375,7 @@ export interface Deps {
   transcriber: Transcriber;
   analyzer: Analyzer;
   funnel: FunnelCapturer;
+  vsl: VslExtractor;
   clock: Clock;
   log: Logger;
 }

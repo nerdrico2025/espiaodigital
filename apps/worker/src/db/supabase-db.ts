@@ -414,6 +414,12 @@ export class SupabaseDb implements Db {
     if (error) throw new Error(`uploadMedia ${storagePath}: ${error.message}`);
   }
 
+  async uploadMediaFromPath(storagePath: string, localPath: string, contentType: string): Promise<void> {
+    const { readFile } = await import('node:fs/promises');
+    const buf = await readFile(localPath);
+    await this.uploadMedia(storagePath, buf, contentType);
+  }
+
   async insertFunnel(input: {
     investigationId: string;
     candidateId: string | null;
@@ -502,6 +508,94 @@ export class SupabaseDb implements Db {
       }
     }
     return out;
+  }
+
+  // ── VSL (fase 06) ──
+  async getVslTargets(investigationId: string): Promise<
+    { funnelId: string | null; funnelStepId: string | null; url: string; player: string | null; manifestUrl: string | null }[]
+  > {
+    const [{ data: funnels, error: e1 }, { data: steps, error: e2 }] = await Promise.all([
+      this.sb.from('funnels').select('id, entry_url, player:video_player, manifests').eq('investigation_id', investigationId),
+      this.sb.from('funnel_steps').select('id, funnel_id, url, step_type').eq('investigation_id', investigationId),
+    ]);
+    if (e1) throw new Error(`getVslTargets funnels: ${e1.message}`);
+    if (e2) throw new Error(`getVslTargets steps: ${e2.message}`);
+    const funnelById = new Map((funnels as any[] ?? []).map((f) => [f.id, f]));
+    const out: { funnelId: string | null; funnelStepId: string | null; url: string; player: string | null; manifestUrl: string | null }[] = [];
+    const seen = new Set<string>();
+    const push = (funnelId: string | null, stepId: string | null, url: string | null, f: any) => {
+      if (!url || seen.has(url)) return;
+      seen.add(url);
+      out.push({
+        funnelId,
+        funnelStepId: stepId,
+        url,
+        player: f?.player ?? null,
+        manifestUrl: (f?.manifests as string[] | null)?.[0] ?? null,
+      });
+    };
+    // 1) Passos marcados como VSL.
+    for (const s of (steps as any[]) ?? []) {
+      if (s.step_type === 'vsl') push(s.funnel_id, s.id, s.url, funnelById.get(s.funnel_id));
+    }
+    // 2) Funis com player/manifest detectado (usa o passo VSL se houver, senão a entrada).
+    for (const f of (funnels as any[]) ?? []) {
+      const hasPlayer = !!f.player || ((f.manifests as any[]) ?? []).length > 0;
+      if (!hasPlayer) continue;
+      const vslStep = ((steps as any[]) ?? []).find((s) => s.funnel_id === f.id && s.step_type === 'vsl');
+      push(f.id, vslStep?.id ?? null, vslStep?.url ?? f.entry_url, f);
+    }
+    return out;
+  }
+
+  async insertVsl(input: {
+    investigationId: string;
+    funnelId: string | null;
+    funnelStepId: string | null;
+    sourceUrl: string;
+    player: string | null;
+    manifestUrl: string | null;
+  }): Promise<{ id: string }> {
+    const data = (await this.must(
+      await this.sb
+        .from('vsls')
+        .insert({
+          investigation_id: input.investigationId,
+          funnel_id: input.funnelId,
+          funnel_step_id: input.funnelStepId,
+          source_url: input.sourceUrl,
+          player: input.player,
+          manifest_url: input.manifestUrl,
+          status: 'rodando',
+        })
+        .select('id')
+        .single(),
+      'insertVsl',
+    )) as any;
+    return { id: data.id };
+  }
+
+  async updateVsl(vslId: string, patch: Record<string, unknown>): Promise<void> {
+    const map: Record<string, string> = {
+      status: 'status',
+      failReason: 'fail_reason',
+      durationSeconds: 'duration_seconds',
+      audioPath: 'audio_path',
+      videoPath: 'video_path',
+      videoBytes: 'video_bytes',
+      transcription: 'transcription',
+      segments: 'segments',
+      approxTimestamps: 'approx_timestamps',
+      partial: 'partial',
+      missingChunks: 'missing_chunks',
+      transcriptionProvider: 'transcription_provider',
+      analysis: 'analysis',
+      manifestUrl: 'manifest_url',
+    };
+    const upd: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(patch)) if (map[k]) upd[map[k]] = v;
+    const { error } = await this.sb.from('vsls').update(upd).eq('id', vslId);
+    if (error) throw new Error(`updateVsl: ${error.message}`);
   }
 
   async saveCandidateSummary(

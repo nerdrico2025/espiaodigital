@@ -52,6 +52,8 @@ const ADVANCED_FIELDS: {
   { key: 'maxVideos', label: 'Máximo de vídeos para transcrever' },
   { key: 'maxTranscriptionMinutes', label: 'Máximo de minutos de transcrição' },
   { key: 'funnelPages', label: 'Máximo de páginas de funil' },
+  { key: 'vslCount', label: 'Máximo de VSLs' },
+  { key: 'vslMinutes', label: 'Minutos de VSL p/ transcrever' },
 ];
 
 export default function NewInvestigationPage() {
@@ -74,6 +76,8 @@ export default function NewInvestigationPage() {
     maxVideos: String(INVESTIGATION_CONFIG_BOUNDS.maxVideos.default),
     maxTranscriptionMinutes: String(INVESTIGATION_CONFIG_BOUNDS.maxTranscriptionMinutes.default),
     funnelPages: String(INVESTIGATION_CONFIG_BOUNDS.funnelPages.default),
+    vslCount: String(INVESTIGATION_CONFIG_BOUNDS.vslCount.default),
+    vslMinutes: String(INVESTIGATION_CONFIG_BOUNDS.vslMinutes.default),
   });
 
   // Config limpa (campos vazios omitidos → caem no padrão) para envio e estimativa.

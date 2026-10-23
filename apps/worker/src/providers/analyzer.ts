@@ -1,8 +1,46 @@
 import { z } from 'zod';
-import type { CostEntry, CreativeAnalysis, FunnelStepAnalysis } from '@espiao/shared';
-import { PRICE_REFERENCE } from '@espiao/shared';
+import type {
+  CostEntry,
+  CreativeAnalysis,
+  FunnelStepAnalysis,
+  VslAnalysis,
+  VslSegment,
+} from '@espiao/shared';
+import { PRICE_REFERENCE, VSL_BLOCKS } from '@espiao/shared';
 import type { Analyzer } from '../interfaces.js';
 import { openRouterChat, parseJsonLoose, type ChatMessage } from './openrouter.js';
+
+const vslSchema = z.object({
+  resumo: z.object({
+    bigIdea: z.string().nullable(),
+    mecanismo: z.string().nullable(),
+    oferta: z.string().nullable(),
+    preco: z.string().nullable(),
+    stack: z
+      .object({
+        itens: z.array(z.string()).default([]),
+        bonus: z.array(z.string()).default([]),
+        valorAlegado: z.string().nullable(),
+      })
+      .nullable(),
+    garantia: z.string().nullable(),
+    emocaoDominante: z.string().nullable(),
+    vilao: z.string().nullable(),
+    diferencial: z.string().nullable(),
+  }),
+  blocos: z.array(
+    z.object({
+      bloco: z.string(),
+      nome: z.string().nullable().optional(),
+      presente: z.boolean(),
+      inicio: z.string().nullable(),
+      fim: z.string().nullable(),
+      citacoes: z.array(z.string()).default([]),
+      analise: z.string().nullable(),
+      nota: z.number().nullable(),
+    }),
+  ),
+});
 
 const funnelStepSchema = z.object({
   tipo: z
@@ -154,6 +192,91 @@ export class LlmAnalyzer implements Analyzer {
         unit: 'analise-criativo',
         quantity: usage.total_tokens ?? 1,
         estimatedUsd: PRICE_REFERENCE.llmPerCreativeUsd,
+        note: this.cfg.model,
+      },
+    ];
+    return { analysis, cost };
+  }
+
+  async analyzeVsl(input: {
+    transcription: string;
+    segments: VslSegment[];
+    parcial: boolean;
+    ctaInfo?: { cta: string; aparecemSeg: number | null }[] | null;
+  }): Promise<{ analysis: VslAnalysis; cost: CostEntry[] }> {
+    const blocosList = VSL_BLOCKS.map((b) => `${b.key} ${b.nome}`).join('; ');
+    const system =
+      `Você mapeia uma VSL (video sales letter) em 11 blocos: ${blocosList}. ` +
+      `Responda SOMENTE JSON com { resumo, blocos }.\n` +
+      `- blocos: um objeto por bloco com { bloco (01..11), presente (bool), inicio, fim (mm:ss ou null), ` +
+      `citacoes (2 a 3 trechos LITERAIS da transcrição), analise, nota (1..10 ou null) }.\n` +
+      `- resumo: { bigIdea, mecanismo (nome literal exato como aparece), oferta, preco, ` +
+      `stack {itens[], bonus[], valorAlegado}, garantia, emocaoDominante, vilao, diferencial }.\n` +
+      `- Se algo NÃO estiver na transcrição, use null. NUNCA invente. As citações têm de EXISTIR ` +
+      `no texto. ${input.parcial ? 'A transcrição é PARCIAL: avise no campo diferencial se faltar contexto.' : ''}`;
+
+    const { content: out, usage } = await openRouterChat({
+      apiKey: this.cfg.apiKey,
+      model: this.cfg.model,
+      jsonMode: true,
+      messages: [
+        { role: 'system', content: system },
+        { role: 'user', content: `Transcrição da VSL:\n${input.transcription.slice(0, 48000)}` },
+      ],
+    });
+
+    const safe = vslSchema.safeParse(parseJsonLoose(out));
+    const nomeByKey = new Map(VSL_BLOCKS.map((b) => [b.key, b.nome]));
+    let analysis: VslAnalysis;
+    if (safe.success) {
+      // Garante os 11 blocos e remove citações que não existem na transcrição.
+      const lower = input.transcription.toLowerCase();
+      const byKey = new Map(safe.data.blocos.map((b) => [b.bloco, b]));
+      const blocos = VSL_BLOCKS.map((def) => {
+        const b = byKey.get(def.key);
+        const citacoes = (b?.citacoes ?? [])
+          .filter((c) => c && lower.includes(c.toLowerCase().slice(0, 40)))
+          .slice(0, 3);
+        return {
+          bloco: def.key,
+          nome: def.nome,
+          presente: b?.presente ?? false,
+          inicio: b?.inicio ?? null,
+          fim: b?.fim ?? null,
+          citacoes,
+          analise: b?.analise ?? null,
+          nota: b?.nota ?? null,
+        };
+      });
+      analysis = {
+        resumo: safe.data.resumo,
+        blocos,
+        ctaButtons: input.ctaInfo ?? null,
+        parcialAviso: input.parcial
+          ? 'Transcrição parcial: alguns trechos falharam; a análise pode estar incompleta.'
+          : null,
+      };
+    } else {
+      analysis = {
+        resumo: {
+          bigIdea: null, mecanismo: null, oferta: null, preco: null, stack: null,
+          garantia: null, emocaoDominante: null, vilao: null, diferencial: null,
+        },
+        blocos: VSL_BLOCKS.map((d) => ({
+          bloco: d.key, nome: d.nome, presente: false, inicio: null, fim: null,
+          citacoes: [], analise: null, nota: null,
+        })),
+        ctaButtons: input.ctaInfo ?? null,
+        parcialAviso: input.parcial ? 'Transcrição parcial.' : null,
+      };
+    }
+    void nomeByKey;
+    const cost: CostEntry[] = [
+      {
+        provider: 'openrouter',
+        unit: 'mapeamento-vsl',
+        quantity: usage.total_tokens ?? 1,
+        estimatedUsd: PRICE_REFERENCE.llmPerVslUsd,
         note: this.cfg.model,
       },
     ];

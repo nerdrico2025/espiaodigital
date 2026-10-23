@@ -59,10 +59,18 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
     .order('step_order');
   const fsteps = (fstepsAll ?? []).filter((s) => funnelById.has(s.funnel_id));
 
+  // VSLs (áudio/vídeo) — respeita o filtro por candidato via funnel.
+  const { data: vslsAll } = await supabase
+    .from('vsls')
+    .select('id, funnel_id, audio_path, video_path')
+    .eq('investigation_id', params.id);
+  const vsls = (vslsAll ?? []).filter((v) => !candidateFilter || (v.funnel_id && funnelById.has(v.funnel_id)));
+
   const admin = createAdminClient();
   const paths = [
     ...crs.map((c) => c.storage_path as string),
     ...fsteps.map((s) => s.screenshot_path as string),
+    ...vsls.flatMap((v) => [v.audio_path, v.video_path].filter(Boolean) as string[]),
   ];
   const { data: signedList } = await admin.storage.from('creatives').createSignedUrls(paths, 300);
   const signedByPath = new Map((signedList ?? []).map((s) => [s.path, s.signedUrl]));
@@ -98,6 +106,21 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
     const sub = slug(f?.candidate_id ? candById.get(f.candidate_id)?.name ?? 'anunciante' : f?.domain ?? 'pagina');
     funnelItems.push({ name: `funil/${sub}/passo-${s.step_order + 1}.png`, url });
     totalBytes += await fileSize(url);
+  }
+
+  // VSLs: áudio/vídeo em vsl/<id>.<ext>
+  for (const v of vsls) {
+    for (const [p, ext, ct] of [
+      [v.audio_path, 'mp3', 'audio/mpeg'],
+      [v.video_path, 'mp4', 'video/mp4'],
+    ] as [string | null, string, string][]) {
+      if (!p) continue;
+      const url = signedByPath.get(p);
+      if (!url) continue;
+      void ct;
+      funnelItems.push({ name: `vsl/${v.id.slice(0, 8)}.${ext}`, url });
+      totalBytes += await fileSize(url);
+    }
   }
 
   if (items.length === 0 && funnelItems.length === 0) {

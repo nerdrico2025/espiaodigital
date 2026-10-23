@@ -16,6 +16,10 @@ MVP de uso pessoal (um único usuário) que:
 > visitante comum de celular. **Para no checkout**: nunca preenche dados reais, não
 > compra, não cria conta, não submete formulário, não persiste lead. Os **prints, HTML e
 > análises do funil são para análise interna**, não para republicação.
+>
+> 🎬 **VSL (fase 06).** Baixa só vídeo **público** (sem DRM bypass, sem login, sem compra,
+> sem proxy). Áudio/vídeo, transcrição e mapeamento são para **análise interna**, não para
+> republicação. A modelagem **copia estrutura e ângulo, nunca a copy literal**.
 
 ---
 

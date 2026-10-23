@@ -9,7 +9,8 @@ export type StepName =
   | 'transcrever'
   | 'analisar'
   | 'consolidar'
-  | 'capturar_funil';
+  | 'capturar_funil'
+  | 'processar_vsl';
 
 export const STEP_ORDER: StepName[] = [
   'descobrir',
@@ -21,6 +22,7 @@ export const STEP_ORDER: StepName[] = [
   'analisar',
   'consolidar',
   'capturar_funil',
+  'processar_vsl',
 ];
 
 export const STEP_LABELS: Record<StepName, string> = {
@@ -33,6 +35,7 @@ export const STEP_LABELS: Record<StepName, string> = {
   analisar: 'Analisar com IA',
   consolidar: 'Consolidar resumo',
   capturar_funil: 'Capturar funil (páginas)',
+  processar_vsl: 'Processar VSL (download + transcrição)',
 };
 
 export type JobStatus = 'pendente' | 'rodando' | 'concluida' | 'falhou';
@@ -252,4 +255,61 @@ export interface FunnelTech {
   manifests: string[];
   /** IDs de pixel já vistos em OUTRO domínio (sinal de mesmo dono/operação). */
   samePixelOtherDomain?: { id: string; domain: string }[];
+}
+
+// ── VSL: download, transcrição e mapeamento (fase 06) ────────
+
+/** Trecho da transcrição com deslocamento de tempo (segundos). */
+export interface VslSegment {
+  start: number; // seg
+  end: number; // seg
+  text: string;
+  /** true = tempo estimado pelo deslocamento do trecho (não veio do provedor). */
+  approx: boolean;
+}
+
+export const VSL_BLOCKS: { key: string; nome: string }[] = [
+  { key: '01', nome: 'Hook / open loop' },
+  { key: '02', nome: 'Agitação / dor' },
+  { key: '03', nome: 'História do expert' },
+  { key: '04', nome: 'Mecanismo único' },
+  { key: '05', nome: 'Prova' },
+  { key: '06', nome: 'Produto / oferta' },
+  { key: '07', nome: 'Stack de valor' },
+  { key: '08', nome: 'Escassez / urgência' },
+  { key: '09', nome: 'Garantia' },
+  { key: '10', nome: 'CTA e fechamento' },
+  { key: '11', nome: 'P.S. / FAQ' },
+];
+
+export interface VslBlock {
+  bloco: string; // '01'..'11'
+  nome: string;
+  presente: boolean;
+  inicio: string | null; // timestamp "mm:ss"
+  fim: string | null;
+  citacoes: string[]; // literais da transcrição (2 a 3)
+  analise: string | null;
+  nota: number | null; // 1..10
+}
+
+export interface VslSummary {
+  bigIdea: string | null;
+  mecanismo: string | null; // nome literal exato
+  oferta: string | null;
+  preco: string | null;
+  stack: { itens: string[]; bonus: string[]; valorAlegado: string | null } | null;
+  garantia: string | null;
+  emocaoDominante: string | null;
+  vilao: string | null;
+  diferencial: string | null;
+}
+
+export interface VslAnalysis {
+  resumo: VslSummary;
+  blocos: VslBlock[];
+  /** "CTA e quando aparece o botão" — só se a captura tiver o tempo; senão null. */
+  ctaButtons: { cta: string; aparecemSeg: number | null }[] | null;
+  /** Aviso quando a transcrição é parcial. */
+  parcialAviso: string | null;
 }

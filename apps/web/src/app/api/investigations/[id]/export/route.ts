@@ -48,6 +48,8 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
   ]);
   const funnels = funnelsData ?? [];
   const funnelSteps = funnelStepsData ?? [];
+  const { data: vslsData } = await supabase.from('vsls').select('*').eq('investigation_id', params.id);
+  const vsls = vslsData ?? [];
 
   const cands = candidates ?? [];
   const evaluated = allCandidates ?? [];
@@ -144,6 +146,28 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
       }
     }
 
+    // Seção "VSL" (um bloco por linha).
+    lines.push('');
+    lines.push('# VSL');
+    lines.push(
+      ['vsl_url', 'status', 'duracao_seg', 'provedor', 'parcial', 'aproximado', 'audio', 'video', 'bloco', 'nome', 'presente', 'inicio', 'fim', 'nota'].join(','),
+    );
+    for (const v of vsls) {
+      const blocos = v.analysis?.blocos ?? [];
+      if (blocos.length === 0) {
+        lines.push(csvRow([v.source_url, v.status, v.duration_seconds ?? '', v.transcription_provider ?? '', v.partial ? 'sim' : 'não', v.approx_timestamps ? 'sim' : 'não', v.audio_path ?? '', v.video_path ?? '', '', '', '', '', '', '']));
+      }
+      for (const b of blocos) {
+        lines.push(
+          csvRow([
+            v.source_url, v.status, v.duration_seconds ?? '', v.transcription_provider ?? '',
+            v.partial ? 'sim' : 'não', v.approx_timestamps ? 'sim' : 'não', v.audio_path ?? '', v.video_path ?? '',
+            b.bloco, b.nome, b.presente ? 'sim' : 'não', b.inicio ?? '', b.fim ?? '', b.nota ?? '',
+          ]),
+        );
+      }
+    }
+
     return new Response(lines.join('\n'), {
       headers: {
         'Content-Type': 'text/csv; charset=utf-8',
@@ -222,6 +246,32 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
         `- Headline: ${nc(a.headline)} · Preço: ${nc(a.preco)} · Oferta: ${nc(a.oferta)} · CTA: ${nc(a.cta)}`,
       );
     }
+  }
+
+  // Seção "VSL"
+  if (vsls.length > 0) md.push(`\n## VSL (${vsls.length})`);
+  for (const v of vsls) {
+    md.push(`\n### ${v.source_url}`);
+    md.push(
+      `- Status: ${v.status}${v.fail_reason ? ` (${v.fail_reason})` : ''} · Duração: ${v.duration_seconds ?? '—'}s · Provedor: ${nc(v.transcription_provider)}`,
+    );
+    if (v.partial) md.push(`- ⚠️ transcrição parcial`);
+    if (v.approx_timestamps) md.push(`- timestamps aproximados`);
+    md.push(`- Áudio: ${v.audio_path ?? 'não coletado'} · Vídeo: ${v.video_path ?? 'não coletado'}`);
+    const r = v.analysis?.resumo;
+    if (r) {
+      md.push(
+        `- Big Idea: ${nc(r.bigIdea)} · Mecanismo: ${nc(r.mecanismo)} · Oferta: ${nc(r.oferta)} · Preço: ${nc(r.preco)}`,
+      );
+      md.push(`- Garantia: ${nc(r.garantia)} · Emoção: ${nc(r.emocaoDominante)} · Vilão: ${nc(r.vilao)}`);
+    }
+    for (const b of v.analysis?.blocos ?? []) {
+      if (!b.presente) continue;
+      md.push(`\n#### ${b.bloco} ${b.nome} — nota ${b.nota ?? '—'} (${b.inicio ?? '—'}–${b.fim ?? '—'})`);
+      if (b.analise) md.push(`${b.analise}`);
+      for (const c of b.citacoes ?? []) md.push(`> “${c}”`);
+    }
+    if (v.transcription) md.push(`\n**Transcrição:**\n\n${v.transcription}`);
   }
 
   return new Response(md.join('\n'), {

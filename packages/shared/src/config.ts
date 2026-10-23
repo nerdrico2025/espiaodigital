@@ -114,6 +114,12 @@ export interface InvestigationLimits {
   funnelPagesPerInvestigation: number;
   /** Máximo de passos seguidos por funil (pré-sell → checkout). */
   funnelMaxSteps: number;
+  /** Máximo de VSLs processadas por investigação. */
+  vslPerInvestigation: number;
+  /** Duração máxima (min) de UMA VSL para baixar; acima disso, pula. */
+  vslMaxMinutes: number;
+  /** Teto de minutos de VSL transcritos na investigação (separado dos anúncios). */
+  vslTranscribedMinutes: number;
 }
 
 export const DEFAULT_LIMITS: InvestigationLimits = {
@@ -127,6 +133,9 @@ export const DEFAULT_LIMITS: InvestigationLimits = {
   apifyPauseMs: 1500,
   funnelPagesPerInvestigation: 6,
   funnelMaxSteps: 6,
+  vslPerInvestigation: 2,
+  vslMaxMinutes: 45,
+  vslTranscribedMinutes: 60,
 };
 
 // ─────────────────────────────────────────────────────────────
@@ -145,6 +154,10 @@ export interface InvestigationConfig {
   maxTranscriptionMinutes?: number;
   /** Máximo de páginas/funis capturados na investigação. */
   funnelPages?: number;
+  /** Máximo de VSLs processadas na investigação. */
+  vslCount?: number;
+  /** Teto de minutos de VSL transcritos (separado dos anúncios). */
+  vslMinutes?: number;
 }
 
 /** Faixas e padrões de teste do formulário "Opções avançadas". */
@@ -154,6 +167,8 @@ export const INVESTIGATION_CONFIG_BOUNDS = {
   maxVideos: { min: 0, max: 30, default: 3 },
   maxTranscriptionMinutes: { min: 0, max: 180, default: 15 },
   funnelPages: { min: 1, max: 20, default: 6 },
+  vslCount: { min: 0, max: 10, default: 2 },
+  vslMinutes: { min: 0, max: 240, default: 60 },
 } as const;
 
 type ConfigField = keyof typeof INVESTIGATION_CONFIG_BOUNDS;
@@ -200,6 +215,8 @@ export function resolveLimits(config?: InvestigationConfig | null): Investigatio
     maxVideosPerInvestigation: numOr(c.maxVideos, base.maxVideosPerInvestigation),
     maxTranscribedMinutes: numOr(c.maxTranscriptionMinutes, base.maxTranscribedMinutes),
     funnelPagesPerInvestigation: numOr(c.funnelPages, base.funnelPagesPerInvestigation),
+    vslPerInvestigation: numOr(c.vslCount, base.vslPerInvestigation),
+    vslTranscribedMinutes: numOr(c.vslMinutes, base.vslTranscribedMinutes),
   };
 }
 
@@ -220,4 +237,6 @@ export const PRICE_REFERENCE = {
   exaPerSearchUsd: 0.005,
   // Estimativa por passo de funil analisado (uma chamada LLM).
   llmPerFunnelStepUsd: 0.01,
+  // Mapeamento de VSL em 11 blocos (uma chamada LLM grande).
+  llmPerVslUsd: 0.05,
 };

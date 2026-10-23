@@ -8,7 +8,10 @@ import type {
   FunnelStepAnalysis,
   NormalizedAd,
   StepName,
+  VslAnalysis,
+  VslSegment,
 } from '@espiao/shared';
+import { VSL_BLOCKS } from '@espiao/shared';
 import type {
   AdRow,
   AdsProvider,
@@ -26,6 +29,8 @@ import type {
   Logger,
   MediaPipeline,
   Transcriber,
+  VslExtractor,
+  VslExtractResult,
 } from './interfaces.js';
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -195,6 +200,9 @@ export class MemoryDb implements Db {
   async uploadMedia() {
     /* no-op em memória */
   }
+  async uploadMediaFromPath() {
+    /* no-op em memória (não lê o disco) */
+  }
   async insertFunnel(input: any): Promise<{ id: string }> {
     const fid = id('funnel');
     this.funnels.set(fid, { id: fid, ...input, pixels: [], steps: 0 });
@@ -215,6 +223,30 @@ export class MemoryDb implements Db {
       for (const px of f.pixels ?? []) if (px?.id && f.domain) out.push({ id: String(px.id), domain: f.domain });
     }
     return out;
+  }
+
+  // ── VSL ──
+  vsls = new Map<string, any>();
+  async getVslTargets() {
+    // Deriva alvos dos funis com player/manifest (mock).
+    const out: any[] = [];
+    for (const f of this.funnels.values()) {
+      const player = (f.tech as any)?.videoPlayer ?? f.videoPlayer ?? null;
+      const manifest = ((f.tech as any)?.manifests ?? f.manifests ?? [])[0] ?? null;
+      if (player || manifest) {
+        out.push({ funnelId: f.id, funnelStepId: null, url: f.entryUrl, player, manifestUrl: manifest });
+      }
+    }
+    return out;
+  }
+  async insertVsl(input: any): Promise<{ id: string }> {
+    const vid = id('vsl');
+    this.vsls.set(vid, { id: vid, ...input });
+    return { id: vid };
+  }
+  async updateVsl(vslId: string, patch: any) {
+    const v = this.vsls.get(vslId);
+    if (v) Object.assign(v, patch);
   }
 }
 
@@ -351,6 +383,35 @@ export class MockAnalyzer implements Analyzer {
     };
     return { analysis, cost: [{ provider: 'openrouter', unit: 'analise-passo-funil', quantity: 1, estimatedUsd: 0.01 }] as CostEntry[] };
   }
+
+  async analyzeVsl(input: { transcription: string; segments: VslSegment[]; parcial: boolean; ctaInfo?: any }) {
+    const analysis: VslAnalysis = {
+      resumo: {
+        bigIdea: 'Método rápido para resultados em 7 dias',
+        mecanismo: 'Método X',
+        oferta: 'Curso completo',
+        preco: 'R$ 97',
+        stack: { itens: ['Curso', 'Comunidade'], bonus: ['Checklist'], valorAlegado: 'R$ 997' },
+        garantia: '7 dias',
+        emocaoDominante: 'esperança',
+        vilao: 'os métodos tradicionais',
+        diferencial: 'passo a passo simples',
+      },
+      blocos: VSL_BLOCKS.map((d, i) => ({
+        bloco: d.key,
+        nome: d.nome,
+        presente: i < 6,
+        inicio: `0${i}:00`,
+        fim: `0${i + 1}:00`,
+        citacoes: i === 0 ? ['resultados rápidos'] : [],
+        analise: i < 6 ? 'Executa o papel esperado.' : null,
+        nota: i < 6 ? 7 : null,
+      })),
+      ctaButtons: input.ctaInfo ?? null,
+      parcialAviso: input.parcial ? 'Transcrição parcial.' : null,
+    };
+    return { analysis, cost: [{ provider: 'openrouter', unit: 'mapeamento-vsl', quantity: 1, estimatedUsd: 0.05 }] as CostEntry[] };
+  }
 }
 
 export class MockFunnel implements FunnelCapturer {
@@ -387,6 +448,24 @@ export class MockFunnel implements FunnelCapturer {
   }
 }
 
+export class MockVsl implements VslExtractor {
+  async extract(input: { pageUrl: string; manifestUrl: string | null; player: string | null; maxMinutes: number }): Promise<VslExtractResult> {
+    void input;
+    return {
+      ok: true,
+      failReason: null,
+      player: input.player,
+      manifestUrl: input.manifestUrl,
+      durationSeconds: 120,
+      tooLong: false,
+      audioPath: '/tmp/mock-vsl.mp3',
+      videoPath: null,
+      videoBytes: null,
+      chunks: [{ path: '/tmp/mock-vsl-chunk0.mp3', offsetSec: 0, durationSec: 120 }],
+    };
+  }
+}
+
 export const consoleLogger: Logger = {
   info: (m, meta) => console.log(`ℹ️  ${m}`, meta ?? ''),
   warn: (m, meta) => console.warn(`⚠️  ${m}`, meta ?? ''),
@@ -416,6 +495,7 @@ export function makeMockDeps(opts?: {
     transcriber: new MockTranscriber(opts?.provider ?? 'openai'),
     analyzer: new MockAnalyzer(),
     funnel: new MockFunnel(),
+    vsl: new MockVsl(),
     clock: fixedClock(now),
     log: consoleLogger,
   };

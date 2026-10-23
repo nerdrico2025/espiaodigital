@@ -17,6 +17,7 @@ import {
   type NormalizedAd,
   type RequestLog,
   type StepName,
+  type VslSegment,
 } from '@espiao/shared';
 import type { AdRow, CandidateRow, Deps } from '../interfaces.js';
 import { filterOwnAds, mostFrequentPageId } from './normalize.js';
@@ -85,6 +86,7 @@ export async function runInvestigation(deps: Deps, investigationId: string): Pro
     analisar: stepAnalisar,
     consolidar: stepConsolidar,
     capturar_funil: stepCapturarFunil,
+    processar_vsl: stepProcessarVsl,
   };
 
   for (const step of STEP_ORDER) {
@@ -824,6 +826,154 @@ async function stepCapturarFunil(deps: Deps, ctx: Ctx): Promise<unknown> {
   await deps.db.setFinalCost(ctx.investigationId, round(total));
 
   return { funis: limited.length, capturados, falhas };
+}
+
+// ── 10. Processar VSL (download + transcrição + mapeamento) ──
+async function stepProcessarVsl(deps: Deps, ctx: Ctx): Promise<unknown> {
+  const targets = await deps.db.getVslTargets(ctx.investigationId);
+  const list = targets.slice(0, ctx.limits.vslPerInvestigation);
+  let minuteBudget = ctx.limits.vslTranscribedMinutes;
+  let processadas = 0;
+  let falhas = 0;
+  let longas = 0;
+
+  for (const t of list) {
+    const { id: vslId } = await deps.db.insertVsl({
+      investigationId: ctx.investigationId,
+      funnelId: t.funnelId,
+      funnelStepId: t.funnelStepId,
+      sourceUrl: t.url,
+      player: t.player,
+      manifestUrl: t.manifestUrl,
+    });
+
+    try {
+      const r = await deps.vsl.extract({
+        pageUrl: t.url,
+        manifestUrl: t.manifestUrl,
+        player: t.player,
+        maxMinutes: ctx.limits.vslMaxMinutes,
+      });
+
+      if (r.tooLong) {
+        longas++;
+        await deps.db.updateVsl(vslId, {
+          status: 'longa_demais',
+          failReason: r.failReason ?? 'VSL longa demais para o limite',
+          durationSeconds: r.durationSeconds,
+          manifestUrl: r.manifestUrl,
+        });
+        continue;
+      }
+      if (!r.ok || !r.audioPath) {
+        falhas++;
+        await deps.db.updateVsl(vslId, {
+          status: 'midia_indisponivel',
+          failReason: r.failReason ?? 'mídia indisponível',
+          manifestUrl: r.manifestUrl,
+        });
+        continue;
+      }
+
+      // Sobe o áudio (sempre) e o vídeo reduzido (quando ≤150MB).
+      const audioStorage = `${ctx.investigationId}/vsl/${vslId}.mp3`;
+      await deps.db.uploadMediaFromPath(audioStorage, r.audioPath, 'audio/mpeg');
+      let videoStorage: string | null = null;
+      if (r.videoPath) {
+        videoStorage = `${ctx.investigationId}/vsl/${vslId}.mp4`;
+        await deps.db.uploadMediaFromPath(videoStorage, r.videoPath, 'video/mp4');
+      }
+
+      // Transcreve trecho a trecho, respeitando o teto de minutos de VSL.
+      const segments: VslSegment[] = [];
+      const missing: number[] = [];
+      let provider: string | null = null;
+      let partial = false;
+      for (const ch of r.chunks) {
+        const chMin = ch.durationSec / 60;
+        if (minuteBudget - chMin < 0) {
+          partial = true;
+          missing.push(ch.offsetSec);
+          continue;
+        }
+        try {
+          const tr = await deps.transcriber.transcribe({ audioPath: ch.path, durationSeconds: ch.durationSec });
+          provider = tr.provider;
+          for (const c of tr.cost) {
+            await deps.db.addCost(ctx.investigationId, { ...c, unit: 'minuto-vsl' });
+          }
+          segments.push({
+            start: ch.offsetSec,
+            end: ch.offsetSec + ch.durationSec,
+            text: tr.text,
+            approx: true, // tempo estimado pelo deslocamento do trecho
+          });
+          minuteBudget -= chMin;
+        } catch (e) {
+          partial = true;
+          missing.push(ch.offsetSec);
+          deps.log.warn(`Trecho de VSL falhou (vsl ${vslId}, offset ${ch.offsetSec}s)`, errMessage(e));
+        }
+      }
+
+      const transcription = segments.map((s) => s.text).join('\n').trim();
+      if (!transcription) {
+        falhas++;
+        await deps.db.updateVsl(vslId, {
+          status: 'midia_indisponivel',
+          failReason: 'não foi possível transcrever nenhum trecho',
+          audioPath: audioStorage,
+          videoPath: videoStorage,
+          videoBytes: r.videoBytes,
+          durationSeconds: r.durationSeconds,
+          manifestUrl: r.manifestUrl,
+        });
+        continue;
+      }
+
+      // Mapeia a VSL em 11 blocos + resumo (citações validadas na transcrição).
+      let analysis: unknown = null;
+      try {
+        const a = await deps.analyzer.analyzeVsl({ transcription, segments, parcial: partial });
+        analysis = a.analysis;
+        for (const c of a.cost) await deps.db.addCost(ctx.investigationId, c);
+      } catch (e) {
+        deps.log.warn(`Mapeamento de VSL falhou (vsl ${vslId})`, errMessage(e));
+      }
+
+      await deps.db.updateVsl(vslId, {
+        status: partial ? 'parcial' : 'concluida',
+        durationSeconds: r.durationSeconds,
+        audioPath: audioStorage,
+        videoPath: videoStorage,
+        videoBytes: r.videoBytes,
+        transcription,
+        segments,
+        approxTimestamps: true,
+        partial,
+        missingChunks: missing,
+        transcriptionProvider: provider,
+        analysis,
+        manifestUrl: r.manifestUrl,
+      });
+      processadas++;
+    } catch (e) {
+      falhas++;
+      await deps.db.updateVsl(vslId, { status: 'falhou', failReason: errMessage(e) });
+      await deps.db.addEvent(
+        ctx.investigationId,
+        'processar_vsl',
+        'rodando',
+        `⚠️ VSL "${t.url}" falhou: ${errMessage(e)}`,
+      );
+      deps.log.warn(`VSL falhou (${t.url})`, errMessage(e));
+    }
+    await sleep(1500); // uma VSL por vez, pausa curta entre downloads
+  }
+
+  const total = await deps.db.getCostTotal(ctx.investigationId);
+  await deps.db.setFinalCost(ctx.investigationId, round(total));
+  return { alvos: list.length, processadas, falhas, longas };
 }
 
 // ── helpers ──────────────────────────────────────────────────

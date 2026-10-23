@@ -269,8 +269,12 @@ async function main() {
     ['modo anunciante custa menos que concorrentes', custoAnun.total < custoConc.total],
     ['modo anunciante tem linha Apify', custoAnun.entries.some((e) => e.provider === 'apify')],
     ['concorrentes inclui análise de passos de funil', custoConc.entries.some((e) => e.unit === 'analise-passo-funil')],
-    ['modo pagina só tem funil (sem EXA/Apify)',
-      custoPagina.entries.every((e) => e.unit === 'analise-passo-funil')],
+    ['modo pagina sem EXA/Apify/descoberta',
+      !custoPagina.entries.some((e) => e.provider === 'exa' || e.provider === 'apify' || e.unit === 'extracao-candidatos')],
+    ['modo pagina inclui funil e VSL',
+      custoPagina.entries.some((e) => e.unit === 'analise-passo-funil') &&
+        custoPagina.entries.some((e) => e.unit === 'mapeamento-vsl')],
+    ['concorrentes/anunciante incluem custo de VSL', custoConc.entries.some((e) => e.unit === 'mapeamento-vsl')],
   ];
 
   // ── Detecção técnica de funil ──────────────────────────────
@@ -312,6 +316,21 @@ async function main() {
     ['funil detectou checkout (Hotmart no mock)',
       [...db.funnels.values()].some((f: any) => f.checkoutPlatform === 'Hotmart')],
     ['passo de checkout classificado', db.funnelSteps.some((s: any) => s.stepType === 'checkout')],
+    ['processou ao menos 1 VSL', db.vsls.size >= 1],
+    ['VSL tem transcrição e segmentos',
+      [...db.vsls.values()].some((v: any) => v.transcription && (v.segments?.length ?? 0) >= 1)],
+    ['VSL marcou timestamps aproximados', [...db.vsls.values()].some((v: any) => v.approxTimestamps === true)],
+    ['VSL mapeada em 11 blocos',
+      [...db.vsls.values()].some((v: any) => (v.analysis?.blocos?.length ?? 0) === 11)],
+    ['VSL registrou provedor de transcrição',
+      [...db.vsls.values()].some((v: any) => !!v.transcriptionProvider)],
+    ['citações da VSL existem na transcrição',
+      [...db.vsls.values()].every((v: any) => {
+        const t = (v.transcription ?? '').toLowerCase();
+        return (v.analysis?.blocos ?? []).every((b: any) =>
+          (b.citacoes ?? []).every((c: string) => t.includes(c.toLowerCase().slice(0, 40))),
+        );
+      })],
   ];
 
   console.log(`\n${line}\nVerificações:`);

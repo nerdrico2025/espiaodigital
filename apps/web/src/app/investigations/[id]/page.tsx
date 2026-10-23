@@ -63,6 +63,13 @@ export default async function InvestigationDetail({ params }: { params: { id: st
   const funnelSteps = funnelStepsData ?? [];
   const candNameById = new Map((allCandidates ?? []).map((c) => [c.id, c.name as string]));
 
+  // VSLs (fase 06).
+  const { data: vslsData } = await supabase
+    .from('vsls')
+    .select('*')
+    .eq('investigation_id', params.id);
+  const vsls = vslsData ?? [];
+
   const cands = candidates ?? [];
   const evaluated = allCandidates ?? [];
   const crs = creatives ?? [];
@@ -83,6 +90,8 @@ export default async function InvestigationDetail({ params }: { params: { id: st
   const paths = [
     ...crs.map((c) => c.storage_path),
     ...funnelSteps.map((s) => s.screenshot_path),
+    ...vsls.map((v) => v.audio_path),
+    ...vsls.map((v) => v.video_path),
   ].filter(Boolean) as string[];
   if (paths.length) {
     const { data } = await admin.storage.from('creatives').createSignedUrls(paths, 3600);
@@ -403,6 +412,7 @@ export default async function InvestigationDetail({ params }: { params: { id: st
                   key={f.id}
                   funnel={f}
                   steps={funnelSteps.filter((s) => s.funnel_id === f.id)}
+                  vsls={vsls.filter((v) => v.funnel_id === f.id)}
                   signed={signed}
                   candidateName={f.candidate_id ? candNameById.get(f.candidate_id) ?? null : null}
                 />
@@ -429,11 +439,13 @@ const STEP_TYPE_PT: Record<string, string> = {
 function FunnelCard({
   funnel,
   steps,
+  vsls,
   signed,
   candidateName,
 }: {
   funnel: any;
   steps: any[];
+  vsls: any[];
   signed: Map<string, string>;
   candidateName: string | null;
 }) {
@@ -534,6 +546,154 @@ function FunnelCard({
           );
         })}
       </ol>
+
+      {/* VSLs do funil */}
+      {vsls.map((v) => (
+        <VslBlock key={v.id} vsl={v} signed={signed} />
+      ))}
+    </div>
+  );
+}
+
+const VSL_STATUS_PT: Record<string, string> = {
+  concluida: 'Concluída',
+  parcial: 'Transcrição parcial',
+  midia_indisponivel: 'Mídia indisponível',
+  longa_demais: 'VSL longa demais',
+  falhou: 'Falhou',
+  rodando: 'Processando…',
+  pendente: 'Pendente',
+};
+
+function fmtSec(sec: number | null | undefined): string {
+  if (sec == null) return '—';
+  const m = Math.floor(sec / 60);
+  const s = Math.floor(sec % 60);
+  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+}
+
+function VslBlock({ vsl, signed }: { vsl: any; signed: Map<string, string> }) {
+  const audio = vsl.audio_path ? signed.get(vsl.audio_path) : null;
+  const video = vsl.video_path ? signed.get(vsl.video_path) : null;
+  const a = vsl.analysis ?? {};
+  const resumo = a.resumo ?? {};
+  const blocos: any[] = a.blocos ?? [];
+  const ok = vsl.status === 'concluida' || vsl.status === 'parcial';
+  const NC = () => <span className="text-gray-400">não coletado</span>;
+  return (
+    <div className="mt-3 rounded-lg border border-brand/30 bg-brand-soft/40 p-3">
+      <div className="mb-2 flex flex-wrap items-center gap-2">
+        <span className="badge bg-brand-soft text-brand">VSL</span>
+        <span className="text-xs text-gray-500">{VSL_STATUS_PT[vsl.status] ?? vsl.status}</span>
+        {vsl.duration_seconds != null && (
+          <span className="text-xs text-gray-400">· {fmtSec(Number(vsl.duration_seconds))}</span>
+        )}
+      </div>
+
+      {/* Avisos */}
+      <div className="mb-2 flex flex-wrap gap-1">
+        {vsl.status === 'midia_indisponivel' && (
+          <span className="badge bg-gray-100 text-gray-600">mídia indisponível{vsl.fail_reason ? `: ${vsl.fail_reason}` : ''}</span>
+        )}
+        {vsl.status === 'longa_demais' && (
+          <span className="badge bg-amber-100 text-amber-800">VSL longa demais para o limite</span>
+        )}
+        {vsl.partial && <span className="badge bg-amber-100 text-amber-800">transcrição parcial</span>}
+        {vsl.approx_timestamps && ok && (
+          <span className="badge bg-gray-100 text-gray-600">timestamps aproximados</span>
+        )}
+      </div>
+
+      {/* Player */}
+      {video ? (
+        <video controls className="mb-3 w-full rounded" src={video} />
+      ) : audio ? (
+        <audio controls className="mb-3 w-full" src={audio} />
+      ) : null}
+
+      {ok && (
+        <>
+          {/* Resumo executivo */}
+          <h4 className="mb-1 text-sm font-semibold text-gray-600">Resumo executivo</h4>
+          <dl className="mb-3 space-y-1 text-xs">
+            {(
+              [
+                ['Big Idea', resumo.bigIdea],
+                ['Mecanismo', resumo.mecanismo],
+                ['Oferta', resumo.oferta],
+                ['Preço', resumo.preco],
+                ['Garantia', resumo.garantia],
+                ['Emoção dominante', resumo.emocaoDominante],
+                ['Vilão', resumo.vilao],
+                ['Diferencial', resumo.diferencial],
+              ] as [string, unknown][]
+            ).map(([k, val]) => (
+              <div key={k}>
+                <span className="font-medium">{k}:</span> {val == null || val === '' ? <NC /> : String(val)}
+              </div>
+            ))}
+            {resumo.stack && (
+              <div>
+                <span className="font-medium">Stack:</span> itens: {resumo.stack.itens?.join(', ') || '—'}; bônus:{' '}
+                {resumo.stack.bonus?.join(', ') || '—'}; valor alegado: {resumo.stack.valorAlegado ?? '—'}
+              </div>
+            )}
+          </dl>
+
+          {a.parcialAviso && <p className="mb-2 text-xs text-amber-700">⚠️ {a.parcialAviso}</p>}
+
+          {/* Tabela dos 11 blocos */}
+          {blocos.length > 0 && (
+            <div className="mb-3 overflow-x-auto">
+              <table className="w-full text-left text-xs">
+                <thead>
+                  <tr className="border-b border-gray-200 text-gray-500">
+                    <th className="py-1 pr-2">Bloco</th>
+                    <th className="px-2">Tempo</th>
+                    <th className="px-2">Nota</th>
+                    <th className="px-2">Análise / citações</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {blocos.map((b) => (
+                    <tr key={b.bloco} className="border-b border-gray-100 align-top">
+                      <td className="py-1 pr-2">
+                        {b.bloco} {b.nome} {b.presente ? '' : '—'}
+                      </td>
+                      <td className="px-2 tabular-nums">
+                        {b.presente ? `${b.inicio ?? '—'}–${b.fim ?? '—'}` : '—'}
+                      </td>
+                      <td className="px-2 tabular-nums">{b.nota ?? '—'}</td>
+                      <td className="px-2 text-gray-600">
+                        {b.presente ? (
+                          <>
+                            {b.analise ?? <NC />}
+                            {(b.citacoes ?? []).length > 0 && (
+                              <ul className="mt-1 list-disc pl-4 text-gray-500">
+                                {b.citacoes.map((c: string, i: number) => (
+                                  <li key={i}>“{c}”</li>
+                                ))}
+                              </ul>
+                            )}
+                          </>
+                        ) : (
+                          <NC />
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {vsl.transcription && (
+            <Expandable title="Transcrição completa">
+              <p className="whitespace-pre-wrap text-xs">{vsl.transcription}</p>
+            </Expandable>
+          )}
+        </>
+      )}
     </div>
   );
 }
