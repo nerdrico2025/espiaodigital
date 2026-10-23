@@ -1,5 +1,5 @@
 import {
-  DEFAULT_LIMITS,
+  resolveLimits,
   STEP_ORDER,
   scoreCandidate,
   selectScaled,
@@ -35,7 +35,8 @@ interface Ctx {
 export async function runInvestigation(deps: Deps, investigationId: string): Promise<void> {
   const { db, log } = deps;
   const inv = await db.getInvestigation(investigationId);
-  const limits = DEFAULT_LIMITS;
+  // Limites efetivos: config da investigação com fallback para DEFAULT_LIMITS.
+  const limits = resolveLimits(inv.config);
 
   const ctx: Ctx = {
     investigationId,

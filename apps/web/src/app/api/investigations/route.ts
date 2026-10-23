@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { estimateInvestigationCost } from '@espiao/shared';
+import { estimateInvestigationCost, clampInvestigationConfig, resolveLimits } from '@espiao/shared';
 import { createClient } from '@/lib/supabase/server';
 import { createAdminClient } from '@/lib/supabase/admin';
 
@@ -18,7 +18,9 @@ export async function POST(req: Request) {
   const country = String(body.country || 'BR').toUpperCase();
   const onlyActive = body.onlyActive !== false;
 
-  const est = estimateInvestigationCost(competitors);
+  // Opções avançadas: valida/clampa e deixa só os campos preenchidos.
+  const config = clampInvestigationConfig(body.config);
+  const est = estimateInvestigationCost(competitors, resolveLimits(config));
 
   // Usa service role para criar investigação + job + custo estimado atomicamente.
   const admin = createAdminClient();
@@ -31,6 +33,7 @@ export async function POST(req: Request) {
       country,
       competitors,
       only_active: onlyActive,
+      config,
       status: 'pendente',
       estimated_cost_usd: est.total,
     })

@@ -1,8 +1,25 @@
 'use client';
 import { useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { estimateInvestigationCost } from '@espiao/shared';
+import {
+  estimateInvestigationCost,
+  clampInvestigationConfig,
+  resolveLimits,
+  INVESTIGATION_CONFIG_BOUNDS,
+  type InvestigationConfig,
+} from '@espiao/shared';
 import { usdFmt } from '@/lib/format';
+
+// Campos de "Opções avançadas". A key casa com InvestigationConfig.
+const ADVANCED_FIELDS: {
+  key: keyof InvestigationConfig;
+  label: string;
+}[] = [
+  { key: 'candidates', label: 'Candidatos a pesquisar' },
+  { key: 'adsPerCandidate', label: 'Anúncios por candidato' },
+  { key: 'maxVideos', label: 'Máximo de vídeos para transcrever' },
+  { key: 'maxTranscriptionMinutes', label: 'Máximo de minutos de transcrição' },
+];
 
 export default function NewInvestigationPage() {
   const router = useRouter();
@@ -13,7 +30,22 @@ export default function NewInvestigationPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const estimate = useMemo(() => estimateInvestigationCost(competitors), [competitors]);
+  // Guardadas como string para permitir campo vazio (= usa o padrão fixo).
+  // Pré-preenchidas com os padrões de teste de INVESTIGATION_CONFIG_BOUNDS.
+  const [advanced, setAdvanced] = useState<Record<keyof InvestigationConfig, string>>({
+    candidates: String(INVESTIGATION_CONFIG_BOUNDS.candidates.default),
+    adsPerCandidate: String(INVESTIGATION_CONFIG_BOUNDS.adsPerCandidate.default),
+    maxVideos: String(INVESTIGATION_CONFIG_BOUNDS.maxVideos.default),
+    maxTranscriptionMinutes: String(INVESTIGATION_CONFIG_BOUNDS.maxTranscriptionMinutes.default),
+  });
+
+  // Config limpa (campos vazios omitidos → caem no padrão) para envio e estimativa.
+  const config = useMemo(() => clampInvestigationConfig(advanced), [advanced]);
+  // Recalcula a estimativa em tempo real conforme os campos mudam.
+  const estimate = useMemo(
+    () => estimateInvestigationCost(competitors, resolveLimits(config)),
+    [competitors, config],
+  );
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -22,7 +54,7 @@ export default function NewInvestigationPage() {
     const res = await fetch('/api/investigations', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query, country, competitors, onlyActive }),
+      body: JSON.stringify({ query, country, competitors, onlyActive, config }),
     });
     setLoading(false);
     if (!res.ok) {
@@ -85,12 +117,45 @@ export default function NewInvestigationPage() {
           Só anúncios ativos
         </label>
 
+        <details className="rounded-lg border border-gray-200 p-3">
+          <summary className="cursor-pointer select-none text-sm font-medium text-gray-700">
+            Opções avançadas
+          </summary>
+          <p className="mt-2 text-xs text-gray-400">
+            Deixe um campo em branco para usar o padrão do sistema.
+          </p>
+          <div className="mt-3 grid grid-cols-2 gap-4">
+            {ADVANCED_FIELDS.map(({ key, label }) => {
+              const b = INVESTIGATION_CONFIG_BOUNDS[key];
+              return (
+                <div key={key}>
+                  <label className="label">{label}</label>
+                  <input
+                    type="number"
+                    min={b.min}
+                    max={b.max}
+                    className="input"
+                    value={advanced[key]}
+                    onChange={(e) =>
+                      setAdvanced((prev) => ({ ...prev, [key]: e.target.value }))
+                    }
+                  />
+                  <p className="mt-0.5 text-xs text-gray-400">
+                    mín. {b.min}, máx. {b.max}
+                  </p>
+                </div>
+              );
+            })}
+          </div>
+        </details>
+
         <div className="rounded-lg bg-brand-soft p-3 text-sm">
           <div className="font-medium text-brand">Custo estimado (teto): {usdFmt(estimate.total)}</div>
           <ul className="mt-1 text-gray-600">
             {estimate.entries.map((e) => (
               <li key={e.provider + e.unit}>
                 {e.provider} · {e.quantity} {e.unit} → {usdFmt(e.estimatedUsd)}
+                {e.note ? <span className="text-gray-400"> ({e.note})</span> : null}
               </li>
             ))}
           </ul>

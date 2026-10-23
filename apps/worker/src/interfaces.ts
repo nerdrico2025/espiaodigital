@@ -6,6 +6,7 @@ import type {
   CostEntry,
   CreativeAnalysis,
   EvidenceBreakdown,
+  InvestigationConfig,
   InvestigationInput,
   MediaType,
   NormalizedAd,
@@ -15,6 +16,8 @@ import type {
 // ── Persistência ─────────────────────────────────────────────
 export interface InvestigationRow extends InvestigationInput {
   id: string;
+  /** Overrides de escopo/custo escolhidos na criação (coluna jsonb `config`). */
+  config?: InvestigationConfig | null;
 }
 
 export interface CandidateRow extends Candidate {

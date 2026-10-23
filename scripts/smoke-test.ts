@@ -21,6 +21,7 @@ import { RealTranscriber } from '../apps/worker/src/providers/transcriber.js';
 import { RealMedia, type Uploader } from '../apps/worker/src/providers/media.js';
 import { filterOwnAds, mostFrequentPageId, adPageId } from '../apps/worker/src/pipeline/normalize.js';
 import { normalizeClaimedJob } from '../apps/worker/src/db/supabase-db.js';
+import { resolveLimits, clampInvestigationConfig, DEFAULT_LIMITS } from '@espiao/shared';
 
 const line = '─'.repeat(60);
 
@@ -146,9 +147,35 @@ async function main() {
       normalizeClaimedJob([validJob])?.investigation_id === 'inv_1'],
   ];
 
+  // ── Config por investigação (resolveLimits / clamp) ────────
+  const emptyLimits = resolveLimits({});
+  const partialLimits = resolveLimits({ candidates: 6, adsPerCandidate: 30 });
+  const clamped = clampInvestigationConfig({
+    candidates: 999, // acima do máx (20)
+    adsPerCandidate: 1, // abaixo do mín (10)
+    maxVideos: '', // vazio → omitido
+    maxTranscriptionMinutes: 15,
+  });
+  const configChecks: [string, boolean][] = [
+    ['config vazia → usa padrões fixos (maxCandidates)',
+      emptyLimits.maxCandidates === DEFAULT_LIMITS.maxCandidates],
+    ['config vazia → usa padrões fixos (adsPerCandidate)',
+      emptyLimits.adsPerCandidate === DEFAULT_LIMITS.adsPerCandidate],
+    ['override candidates=6 aplicado', partialLimits.maxCandidates === 6],
+    ['min ≤ max mantido quando candidates < padrão', partialLimits.minCandidates <= 6],
+    ['override adsPerCandidate=30 aplicado', partialLimits.adsPerCandidate === 30],
+    ['campo não informado cai no padrão (maxVideos)',
+      partialLimits.maxVideosPerInvestigation === DEFAULT_LIMITS.maxVideosPerInvestigation],
+    ['clamp prende candidates ao máx (20)', clamped.candidates === 20],
+    ['clamp prende adsPerCandidate ao mín (10)', clamped.adsPerCandidate === 10],
+    ['clamp omite campo vazio (maxVideos)', clamped.maxVideos === undefined],
+    ['clamp mantém campo válido (maxTranscriptionMinutes)', clamped.maxTranscriptionMinutes === 15],
+  ];
+
   // ── Verificações (assert) ──────────────────────────────────
   const checks: [string, boolean][] = [
     ...queueChecks,
+    ...configChecks,
     ['investigação concluída', db.status === 'concluida'],
     ['selecionou exatamente 2 concorrentes', selected.length === 2],
     ['pelo menos 1 vídeo transcrito', transcribed.length >= 1],

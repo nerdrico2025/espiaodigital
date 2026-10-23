@@ -69,6 +69,7 @@ export class SupabaseDb implements Db {
       country: data.country,
       competitors: data.competitors,
       onlyActive: data.only_active,
+      config: data.config ?? null,
     };
   }
 

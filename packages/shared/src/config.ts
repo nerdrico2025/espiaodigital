@@ -102,6 +102,76 @@ export const DEFAULT_LIMITS: InvestigationLimits = {
 };
 
 // ─────────────────────────────────────────────────────────────
+// Config por investigação (vinda do formulário "Opções avançadas").
+// Guardada na coluna jsonb `config` da investigação. Cada campo é
+// opcional: quando vier vazio/ausente, vale o padrão em DEFAULT_LIMITS.
+// ─────────────────────────────────────────────────────────────
+export interface InvestigationConfig {
+  /** Candidatos a pesquisar (vira maxCandidates). */
+  candidates?: number;
+  /** Anúncios por candidato (cada chamada Apify). */
+  adsPerCandidate?: number;
+  /** Máximo de vídeos a transcrever na investigação. */
+  maxVideos?: number;
+  /** Máximo de minutos de transcrição na investigação. */
+  maxTranscriptionMinutes?: number;
+}
+
+/** Faixas e padrões de teste do formulário "Opções avançadas". */
+export const INVESTIGATION_CONFIG_BOUNDS = {
+  candidates: { min: 2, max: 20, default: 6 },
+  adsPerCandidate: { min: 10, max: 100, default: 30 },
+  maxVideos: { min: 0, max: 30, default: 3 },
+  maxTranscriptionMinutes: { min: 0, max: 180, default: 15 },
+} as const;
+
+type ConfigField = keyof typeof INVESTIGATION_CONFIG_BOUNDS;
+
+/** Converte valor possivelmente vazio para número, ou cai no fallback. */
+function numOr(v: unknown, fallback: number): number {
+  const n = typeof v === 'number' ? v : Number(v);
+  return v == null || v === '' || Number.isNaN(n) ? fallback : n;
+}
+
+/**
+ * Limpa/valida a config vinda do cliente: só mantém campos presentes,
+ * cada um arredondado e preso (clamp) à sua faixa. Campos vazios/ausentes
+ * são omitidos — para que o worker caia no padrão de DEFAULT_LIMITS.
+ */
+export function clampInvestigationConfig(raw: unknown): InvestigationConfig {
+  const src = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
+  const out: InvestigationConfig = {};
+  for (const key of Object.keys(INVESTIGATION_CONFIG_BOUNDS) as ConfigField[]) {
+    const v = src[key];
+    if (v == null || v === '') continue; // vazio → omite (usa padrão depois)
+    const n = Number(v);
+    if (Number.isNaN(n)) continue;
+    const { min, max } = INVESTIGATION_CONFIG_BOUNDS[key];
+    out[key] = Math.round(Math.max(min, Math.min(max, n)));
+  }
+  return out;
+}
+
+/**
+ * Resolve os limites efetivos da investigação a partir da config salva.
+ * Campos ausentes caem no padrão fixo de DEFAULT_LIMITS.
+ */
+export function resolveLimits(config?: InvestigationConfig | null): InvestigationLimits {
+  const c = config ?? {};
+  const base = DEFAULT_LIMITS;
+  const maxCandidates = numOr(c.candidates, base.maxCandidates);
+  return {
+    ...base,
+    maxCandidates,
+    // mantém min ≤ max quando o usuário pede menos candidatos que o padrão.
+    minCandidates: Math.min(base.minCandidates, maxCandidates),
+    adsPerCandidate: numOr(c.adsPerCandidate, base.adsPerCandidate),
+    maxVideosPerInvestigation: numOr(c.maxVideos, base.maxVideosPerInvestigation),
+    maxTranscribedMinutes: numOr(c.maxTranscriptionMinutes, base.maxTranscribedMinutes),
+  };
+}
+
+// ─────────────────────────────────────────────────────────────
 // Preços de referência para ESTIMATIVA de custo (USD). Aproximados.
 // Apify: confirmado pay-per-event ~US$0,0058/ad (tier FREE) para o
 // actor apify/facebook-ads-scraper.
