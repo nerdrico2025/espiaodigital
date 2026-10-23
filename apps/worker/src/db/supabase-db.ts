@@ -220,6 +220,28 @@ export class SupabaseDb implements Db {
     videos: d.videos ?? [],
   });
 
+  async updateAdEvidence(adId: string, ev: {
+    diasNoAr: number | null;
+    versoes: number;
+    ativo: boolean;
+    nivel: 'alto' | 'medio' | 'baixo';
+    motivo: string;
+    clusterId: string;
+  }): Promise<void> {
+    const { error } = await this.sb
+      .from('ads')
+      .update({
+        dias_no_ar: ev.diasNoAr,
+        versoes: ev.versoes,
+        nivel_evidencia: ev.nivel,
+        motivo: ev.motivo,
+        cluster_id: ev.clusterId,
+        is_active: ev.ativo,
+      })
+      .eq('id', adId);
+    if (error) throw new Error(`updateAdEvidence: ${error.message}`);
+  }
+
   async markChampionAds(adIds: string[]): Promise<void> {
     if (adIds.length === 0) return;
     const { error } = await this.sb.from('ads').update({ is_champion: true }).in('id', adIds);

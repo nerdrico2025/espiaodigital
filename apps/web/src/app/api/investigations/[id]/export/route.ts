@@ -29,6 +29,12 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
     .select('*')
     .eq('investigation_id', params.id);
 
+  const { data: adsData } = await supabase
+    .from('ads')
+    .select('id, nivel_evidencia, dias_no_ar, versoes, is_active, motivo')
+    .eq('investigation_id', params.id);
+  const adById = new Map((adsData ?? []).map((a) => [a.id, a]));
+
   const cands = candidates ?? [];
   const evaluated = allCandidates ?? [];
   const crs = creatives ?? [];
@@ -36,22 +42,27 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
   // `evidence` como base (dados antigos) + `metrics` por cima.
   const metricsOf = (c: any): Partial<CandidateMetrics> =>
     ({ ...(c.evidence ?? {}), ...(c.metrics ?? {}) }) as Partial<CandidateMetrics>;
+  const nc = (v: unknown) => (v == null || v === '' ? 'não coletado' : v);
 
   if (format === 'csv') {
     const header = [
-      'concorrente', 'dominio', 'score', 'evidencia', 'motivo',
+      'concorrente', 'dominio', 'nivel', 'dias_no_ar', 'versoes', 'ativo', 'motivo',
       'criativo_tipo', 'criativo_status', 'transcricao', 'analise_hook', 'analise_angulo',
     ];
     const lines = [header.join(',')];
     for (const c of cands) {
       const ccrs = crs.filter((x) => x.candidate_id === c.id);
       if (ccrs.length === 0) {
-        lines.push(csvRow([c.name, c.domain, c.score, c.evidence_level, c.selection_reason, '', '', '', '', '']));
+        lines.push(csvRow([c.name, c.domain, '', '', '', '', c.selection_reason, '', '', '', '', '']));
       }
       for (const cr of ccrs) {
+        const a = adById.get(cr.ad_id);
         lines.push(
           csvRow([
-            c.name, c.domain, c.score, c.evidence_level, c.selection_reason,
+            c.name, c.domain,
+            nc(a?.nivel_evidencia), nc(a?.dias_no_ar), nc(a?.versoes),
+            a?.is_active == null ? 'não coletado' : a.is_active ? 'sim' : 'não',
+            nc(a?.motivo),
             cr.media_type, cr.status, cr.transcription,
             cr.analysis?.hook ?? '', cr.analysis?.angulo ?? '',
           ]),
@@ -96,22 +107,26 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
 
   // Seção "Candidatos avaliados" (todos, mesmo com 0 selecionados).
   md.push(`\n## Candidatos avaliados (${evaluated.length})`);
-  md.push('| Concorrente | Anúncios | Dias | Variações | Plat. | Países | Score | Status | Motivo |');
-  md.push('|---|---|---|---|---|---|---|---|---|');
+  md.push('| Concorrente | Anúncios | Melhor anúncio (dias · versões) | Plat. | Países | Status | Motivo |');
+  md.push('|---|---|---|---|---|---|---|');
   for (const c of evaluated) {
     const m = metricsOf(c);
     const v = classifyCandidate(m, c.selected);
+    const anuncios = m.adsCollected ?? 'não coletado';
+    const melhor =
+      m.bestAdDays != null || m.bestAdVersions != null
+        ? `${m.bestAdDays ?? '—'}d · ${m.bestAdVersions ?? '—'} ver.`
+        : 'não coletado';
     md.push(
-      `| ${c.name}${c.domain ? ` (${c.domain})` : ''} | ${m.adsCollected ?? '—'} | ${m.daysLive ?? '—'} | ` +
-        `${m.maxVariations ?? '—'} | ${m.distinctPlatforms ?? '—'} | ${m.distinctCountries ?? '—'} | ` +
-        `${c.score} | ${v.label} | ${v.reason} |`,
+      `| ${c.name}${c.domain ? ` (${c.domain})` : ''} | ${anuncios} | ${melhor} | ` +
+        `${m.distinctPlatforms ?? '—'} | ${m.distinctCountries ?? '—'} | ${v.label} | ${v.reason} |`,
     );
   }
 
-  if (cands.length > 0) md.push(`\n## Concorrentes selecionados`);
+  const tituloSel = inv.mode === 'anunciante' ? 'Anúncios escalados desta empresa' : 'Concorrentes selecionados';
+  if (cands.length > 0) md.push(`\n## ${tituloSel}`);
   for (const c of cands) {
     md.push(`\n## ${c.name}${c.domain ? ` (${c.domain})` : ''}`);
-    md.push(`- Score: **${c.score}** · Evidência: **${c.evidence_level}**`);
     md.push(`- Motivo: ${c.selection_reason ?? '—'}`);
     if (c.summary) md.push(`- Resumo: ${c.summary}`);
     if (Array.isArray(c.hook_patterns) && c.hook_patterns.length)
@@ -119,7 +134,13 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
 
     const ccrs = crs.filter((x) => x.candidate_id === c.id);
     for (const cr of ccrs) {
-      md.push(`\n### Criativo (${cr.media_type}) — ${cr.status}`);
+      const a = adById.get(cr.ad_id);
+      const ativo = a?.is_active == null ? 'não coletado' : a.is_active ? 'sim' : 'não';
+      md.push(`\n### Anúncio (${cr.media_type}) — evidência ${nc(a?.nivel_evidencia)}`);
+      md.push(
+        `- Dias no ar: ${nc(a?.dias_no_ar)} · Versões: ${nc(a?.versoes)} · Ativo: ${ativo}`,
+      );
+      md.push(`- Motivo: ${nc(a?.motivo)}`);
       if (cr.transcription) md.push(`**Transcrição:** ${cr.transcription}`);
       if (cr.analysis) md.push('```json\n' + JSON.stringify(cr.analysis, null, 2) + '\n```');
     }

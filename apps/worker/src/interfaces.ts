@@ -2,6 +2,7 @@
 // implementações reais (worker) ou mocks (smoke test).
 
 import type {
+  AdEvidence,
   Candidate,
   CandidateMetrics,
   CostEntry,
@@ -94,6 +95,8 @@ export interface Db {
 
   insertCandidates(investigationId: string, candidates: Candidate[]): Promise<CandidateRow[]>;
   updateCandidateScore(candidateId: string, patch: CandidateScorePatch): Promise<void>;
+  /** Persiste a evidência calculada por anúncio (colunas em `ads`). */
+  updateAdEvidence(adId: string, ev: AdEvidence): Promise<void>;
 
   insertAds(
     investigationId: string,

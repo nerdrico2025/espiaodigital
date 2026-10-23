@@ -21,7 +21,7 @@ import { RealTranscriber } from '../apps/worker/src/providers/transcriber.js';
 import { RealMedia, type Uploader } from '../apps/worker/src/providers/media.js';
 import { filterOwnAds, mostFrequentPageId, adPageId } from '../apps/worker/src/pipeline/normalize.js';
 import { normalizeClaimedJob } from '../apps/worker/src/db/supabase-db.js';
-import { resolveLimits, clampInvestigationConfig, DEFAULT_LIMITS, classifyCandidate, estimateInvestigationCost } from '@espiao/shared';
+import { resolveLimits, clampInvestigationConfig, DEFAULT_LIMITS, classifyCandidate, estimateInvestigationCost, adEvidenceLevel, computeAdEvidences, summarizeCandidateAds } from '@espiao/shared';
 
 const line = '─'.repeat(60);
 
@@ -197,6 +197,46 @@ async function main() {
       vLongo.status === 'quase' && vLongo.reason.includes('muito tempo no ar')],
   ];
 
+  // ── Evidência POR ANÚNCIO ──────────────────────────────────
+  const dayMs = 86400000;
+  const tNow = Date.UTC(2026, 0, 15);
+  const mkAd = (o: Partial<NormalizedAd>): NormalizedAd => ({
+    adArchiveId: o.adArchiveId ?? Math.random().toString(36).slice(2),
+    pageName: null, bodyText: o.bodyText ?? null, title: null, ctaText: o.ctaText ?? null,
+    ctaType: null, linkUrl: o.linkUrl ?? null,
+    startDate: o.startDate ?? null, endDate: o.endDate ?? null,
+    isActive: o.isActive ?? true, platforms: o.platforms ?? [], countries: o.countries ?? [],
+    variations: o.variations ?? 0, images: o.images ?? [], videos: o.videos ?? [],
+  });
+  const adsSameDest = (n: number, days: number, host: string): NormalizedAd[] =>
+    Array.from({ length: n }, (_, i) =>
+      mkAd({ adArchiveId: `${host}-${i}`, linkUrl: `https://${host}/oferta`, startDate: tNow - days * dayMs, isActive: true }),
+    );
+
+  const sumMed = summarizeCandidateAds(adsSameDest(1, 132, 'medio'), tNow); // 132 dias, 1 versão
+  const vMedNew = classifyCandidate(
+    {
+      adsCollected: 1, noOwnAds: false, adsPerCandidateLimit: 30,
+      daysLive: 132, distinctPlatforms: 0, maxVariations: 1, distinctCountries: 0, hasVideo: false, hasActionCta: false,
+      hasHigh: false, hasMedium: sumMed.hasMedium, bestAdLevel: sumMed.best?.ev.nivel ?? null,
+      bestAdDays: sumMed.best?.ev.diasNoAr ?? null, bestAdVersions: sumMed.best?.ev.versoes ?? null,
+      bestAdReason: sumMed.best?.ev.motivo, sampleAtLimit: false,
+    },
+    false,
+  );
+  const sumAlto = summarizeCandidateAds(adsSameDest(4, 45, 'alto'), tNow); // 45 dias, 4 versões
+  const sumBaixo = summarizeCandidateAds(adsSameDest(5, 10, 'baixo'), tNow); // 10 dias, 5 versões
+  const clusterDest = computeAdEvidences(adsSameDest(2, 40, 'dest'), tNow);
+  const adLevelChecks: [string, boolean][] = [
+    ['132 dias + 1 versão = médio', adEvidenceLevel(132, 1) === 'medio'],
+    ['45 dias + 4 versões = alto', adEvidenceLevel(45, 4) === 'alto'],
+    ['10 dias + 5 versões = baixo', adEvidenceLevel(10, 5) === 'baixo'],
+    ['cluster por destino conta 2 versões', clusterDest[0]?.ev.versoes === 2],
+    ['132 dias + 1 versão → melhor médio → Quase lá', vMedNew.status === 'quase' && vMedNew.label === 'Quase lá'],
+    ['45 dias + 4 versões → anunciante tem evidência alta', sumAlto.hasHigh === true && sumAlto.best?.ev.nivel === 'alto'],
+    ['10 dias + 5 versões → melhor anúncio baixo', sumBaixo.best?.ev.nivel === 'baixo' && !sumBaixo.hasHigh],
+  ];
+
   // ── Estimativa de custo por modo ───────────────────────────
   const limitsCost = resolveLimits({});
   const custoConc = estimateInvestigationCost(5, limitsCost, 'concorrentes');
@@ -215,6 +255,7 @@ async function main() {
     ...queueChecks,
     ...configChecks,
     ...classifyChecks,
+    ...adLevelChecks,
     ...costModeChecks,
     ['investigação concluída', db.status === 'concluida'],
     ['selecionou exatamente 2 concorrentes', selected.length === 2],

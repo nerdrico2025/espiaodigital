@@ -37,6 +37,13 @@ export default async function InvestigationDetail({ params }: { params: { id: st
       supabase.from('creatives').select('*').eq('investigation_id', params.id),
     ]);
 
+  // Evidência por anúncio (nível, dias, versões, rótulos) para cada criativo.
+  const { data: adsData } = await supabase
+    .from('ads')
+    .select('id, nivel_evidencia, dias_no_ar, versoes, motivo, is_active, platforms, countries, cta_text, videos')
+    .eq('investigation_id', params.id);
+  const adById = new Map((adsData ?? []).map((a) => [a.id, a]));
+
   const cands = candidates ?? [];
   const evaluated = allCandidates ?? [];
   const crs = creatives ?? [];
@@ -167,11 +174,9 @@ export default async function InvestigationDetail({ params }: { params: { id: st
                     <tr className="border-b border-gray-200 text-xs text-gray-500">
                       <th className="py-2 pr-3">{isAnunciante ? 'Empresa' : 'Concorrente'}</th>
                       <th className="px-2">Anúncios</th>
-                      <th className="px-2">Dias</th>
-                      <th className="px-2">Variações</th>
+                      <th className="px-2">Melhor anúncio</th>
                       <th className="px-2">Plat.</th>
                       <th className="px-2">Países</th>
-                      <th className="px-2">Score</th>
                       <th className="px-2">Status</th>
                       <th className="px-2">Motivo</th>
                     </tr>
@@ -189,11 +194,17 @@ export default async function InvestigationDetail({ params }: { params: { id: st
                           <td className="px-2 tabular-nums">
                             {m.adsCollected ?? <span className="text-gray-400">não coletado</span>}
                           </td>
-                          <td className="px-2 tabular-nums">{m.daysLive ?? '—'}</td>
-                          <td className="px-2 tabular-nums">{m.maxVariations ?? '—'}</td>
+                          <td className="px-2 text-xs">
+                            {m.bestAdDays != null || m.bestAdVersions != null ? (
+                              <span className="tabular-nums">
+                                {m.bestAdDays ?? '—'}d · {m.bestAdVersions ?? '—'} ver.
+                              </span>
+                            ) : (
+                              <span className="text-gray-400">não coletado</span>
+                            )}
+                          </td>
                           <td className="px-2 tabular-nums">{m.distinctPlatforms ?? '—'}</td>
                           <td className="px-2 tabular-nums">{m.distinctCountries ?? '—'}</td>
-                          <td className="px-2 tabular-nums">{c.score}</td>
                           <td className="px-2">
                             <StatusBadge status={v.status} label={v.label} />
                           </td>
@@ -220,7 +231,15 @@ export default async function InvestigationDetail({ params }: { params: { id: st
             </div>
           ) : (
             cands.map((c) => {
-              const ccrs = crs.filter((x) => x.candidate_id === c.id);
+              const rank: Record<string, number> = { alto: 3, medio: 2, baixo: 1 };
+              // Criativos ordenados pelo nível de evidência do anúncio (vencedores primeiro).
+              const ccrs = crs
+                .filter((x) => x.candidate_id === c.id)
+                .sort(
+                  (a, b) =>
+                    (rank[adById.get(b.ad_id)?.nivel_evidencia] ?? 0) -
+                    (rank[adById.get(a.ad_id)?.nivel_evidencia] ?? 0),
+                );
               const ev = c.evidence ?? {};
               return (
                 <div key={c.id} className="card">
@@ -258,11 +277,24 @@ export default async function InvestigationDetail({ params }: { params: { id: st
                   <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                     {ccrs.map((cr) => {
                       const mediaUrl = cr.storage_path ? signed.get(cr.storage_path) : null;
+                      const a = adById.get(cr.ad_id);
                       return (
                         <div key={cr.id} className="rounded-lg border border-gray-200 p-3">
                           <div className="mb-2 flex items-center justify-between text-xs">
                             <span className="badge bg-gray-100 text-gray-700">{cr.media_type}</span>
                             <span className="text-gray-400">{cr.status}</span>
+                          </div>
+
+                          {/* Selo de evidência + motivo + rótulos informativos do anúncio */}
+                          <div className="mb-2">
+                            <EvidenceSelo nivel={a?.nivel_evidencia ?? null} ativo={a?.is_active} />
+                            {a?.motivo && <p className="mt-1 text-xs text-gray-600">{a.motivo}</p>}
+                            <div className="mt-1 flex flex-wrap gap-1 text-[11px] text-gray-500">
+                              <AdLabel label="plataformas" value={a?.platforms?.length} />
+                              <AdLabel label="países" value={a?.countries?.length} />
+                              <AdLabel label="formato" value={cr.media_type} />
+                              <AdLabel label="CTA" value={a?.cta_text || undefined} />
+                            </div>
                           </div>
                           {cr.status === 'midia_indisponivel' ? (
                             <div className="rounded bg-gray-50 p-4 text-center text-xs text-gray-400">
@@ -302,6 +334,34 @@ export default async function InvestigationDetail({ params }: { params: { id: st
         </div>
       </div>
     </div>
+  );
+}
+
+function EvidenceSelo({ nivel, ativo }: { nivel: string | null; ativo?: boolean }) {
+  const style: Record<string, string> = {
+    alto: 'bg-green-100 text-green-800',
+    medio: 'bg-amber-100 text-amber-800',
+    baixo: 'bg-gray-100 text-gray-600',
+  };
+  const labelPt: Record<string, string> = { alto: 'Alto', medio: 'Médio', baixo: 'Baixo' };
+  if (!nivel) return <span className="badge bg-gray-100 text-gray-400">evidência não coletada</span>;
+  return (
+    <span className="inline-flex items-center gap-1">
+      <span className={`badge ${style[nivel] ?? 'bg-gray-100 text-gray-600'}`}>
+        Evidência {labelPt[nivel] ?? nivel}
+      </span>
+      {ativo === false && <span className="badge bg-gray-100 text-gray-500">parado</span>}
+    </span>
+  );
+}
+
+function AdLabel({ label, value }: { label: string; value: unknown }) {
+  const txt =
+    value == null || value === '' ? 'não coletado' : typeof value === 'number' ? String(value) : String(value);
+  return (
+    <span className="rounded bg-gray-100 px-1.5 py-0.5">
+      {label}: <span className={value == null || value === '' ? 'text-gray-400' : 'text-gray-700'}>{txt}</span>
+    </span>
   );
 }
 

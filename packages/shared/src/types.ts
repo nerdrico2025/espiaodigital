@@ -112,6 +112,22 @@ export interface CandidateScore {
   evidence: EvidenceBreakdown;
 }
 
+/** Evidência calculada POR ANÚNCIO (nível do anúncio, não do anunciante). */
+export interface AdEvidence {
+  /** Dias no ar: do início até hoje (ativo) ou até o fim (parado). */
+  diasNoAr: number | null;
+  /** Tamanho do cluster do anúncio (anúncios muito parecidos do mesmo anunciante). */
+  versoes: number;
+  /** Está ativo agora. */
+  ativo: boolean;
+  /** Nível de evidência do anúncio. */
+  nivel: EvidenceLevel;
+  /** Motivo em PT simples (ex.: "ativo há 132 dias, 4 versões parecidas, 5 plataformas, 1 país"). */
+  motivo: string;
+  /** Chave do cluster (destino + texto-base). */
+  clusterId: string;
+}
+
 /**
  * Métricas de avaliação persistidas por candidato (coluna jsonb `metrics`).
  * Alimentam a seção "Candidatos avaliados" na tela e nas exportações, para
@@ -124,6 +140,21 @@ export interface CandidateMetrics extends EvidenceBreakdown {
   noOwnAds: boolean;
   /** Limite de anúncios por candidato usado nesta investigação. */
   adsPerCandidateLimit: number;
+  // ── Roll-up por anúncio (nível do anúncio) ──
+  /** Tem ao menos 1 anúncio de evidência ALTA. */
+  hasHigh?: boolean;
+  /** Tem ao menos 1 anúncio de evidência MÉDIA. */
+  hasMedium?: boolean;
+  /** Nível do melhor anúncio. */
+  bestAdLevel?: EvidenceLevel | null;
+  /** Dias no ar do melhor anúncio. */
+  bestAdDays?: number | null;
+  /** Versões do melhor anúncio. */
+  bestAdVersions?: number | null;
+  /** Motivo do melhor anúncio (texto pronto). */
+  bestAdReason?: string;
+  /** Coletou até o limite por candidato (versões podem estar subestimadas). */
+  sampleAtLimit?: boolean;
 }
 
 export type CandidateStatus = 'selecionado' | 'quase' | 'nao';

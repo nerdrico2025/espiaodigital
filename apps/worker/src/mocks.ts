@@ -109,6 +109,10 @@ export class MemoryDb implements Db {
       if (row) row.champion = true;
     }
   }
+  async updateAdEvidence(adId: string, ev: unknown) {
+    const row = this.ads.get(adId);
+    if (row) (row as any).evidence = ev; // só para inspeção; o smoke recomputa
+  }
   async insertCreative(input: {
     investigationId: string;
     adId: string;

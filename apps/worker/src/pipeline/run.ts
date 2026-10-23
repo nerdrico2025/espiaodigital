@@ -1,9 +1,10 @@
 import {
   resolveLimits,
   STEP_ORDER,
-  scoreCandidate,
   selectScaled,
-  isActionCta,
+  buildEvidence,
+  computeAdEvidences,
+  summarizeCandidateAds,
   adDaysLive,
   round,
   type InvestigationLimits,
@@ -310,60 +311,88 @@ async function stepBuscarAds(deps: Deps, ctx: Ctx): Promise<unknown> {
   };
 }
 
-// ── 3. Pontuar e filtrar escalados ───────────────────────────
+// ── 3. Pontuar (evidência POR ANÚNCIO) ───────────────────────
 async function stepPontuar(deps: Deps, ctx: Ctx): Promise<unknown> {
   const now = deps.clock.now();
   const grouped = await deps.db.getAdsGrouped(ctx.investigationId);
 
+  // Para cada candidato: evidência por anúncio (mesma ordem das linhas) +
+  // resumo (melhor anúncio, tem alto/médio) + evidência agregada (rótulos).
   const ranked = grouped.map((g) => {
-    const ads: NormalizedAd[] = g.ads.map((a) => a.ad);
-    return { candidate: g.candidate, ads: g.ads, score: scoreCandidate(ads, now) };
+    const adsN: NormalizedAd[] = g.ads.map((a) => a.ad);
+    const evid = computeAdEvidences(adsN, now); // mesma ordem de g.ads
+    const summary = summarizeCandidateAds(adsN, now);
+    const evidence = buildEvidence(adsN, now);
+    const adsCollected = g.ads.length;
+    const score = summary.highCount * 100 + summary.mediumCount * 10 + summary.lowCount;
+    const level: 'alto' | 'medio' | 'baixo' = summary.best ? summary.best.ev.nivel : 'baixo';
+    return { candidate: g.candidate, adRows: g.ads, evid, summary, evidence, adsCollected, score, level };
   });
 
-  // Persiste score + métricas de avaliação de TODOS (selected=false por ora).
+  // Persiste evidência por anúncio + score/métricas de TODOS (selected=false).
   for (const r of ranked) {
-    const adsCollected = r.ads.length;
+    for (let i = 0; i < r.adRows.length; i++) {
+      const row = r.adRows[i];
+      const e = r.evid[i];
+      if (row && e) await deps.db.updateAdEvidence(row.id, e.ev);
+    }
+    const best = r.summary.best;
     await deps.db.updateCandidateScore(r.candidate.id, {
-      score: r.score.score,
-      level: r.score.level,
-      reasons: r.score.reasons,
-      evidence: r.score.evidence,
+      score: r.score,
+      level: r.level,
+      reasons: best ? [best.ev.motivo] : [],
+      evidence: r.evidence,
       selected: false,
       selectionReason: null,
       metrics: {
-        ...r.score.evidence,
-        adsCollected,
-        noOwnAds: adsCollected === 0,
+        ...r.evidence,
+        adsCollected: r.adsCollected,
+        noOwnAds: r.adsCollected === 0,
         adsPerCandidateLimit: ctx.limits.adsPerCandidate,
+        hasHigh: r.summary.hasHigh,
+        hasMedium: r.summary.hasMedium,
+        bestAdLevel: best ? best.ev.nivel : null,
+        bestAdDays: best ? best.ev.diasNoAr : null,
+        bestAdVersions: best ? best.ev.versoes : null,
+        bestAdReason: best ? best.ev.motivo : '',
+        sampleAtLimit: r.adsCollected > 0 && r.adsCollected >= ctx.limits.adsPerCandidate,
       },
     });
   }
 
-  // Modo "anunciante": a empresa informada é sempre analisada (não depende de
-  // passar na evidência forte), para gerar campeões/mídia/transcrição.
+  // Modo "anunciante": a empresa é sempre analisada (gera campeões/mídia).
   if (ctx.mode === 'anunciante') {
     for (const r of ranked) {
-      if (r.ads.length === 0) continue; // sem anúncios próprios: nada a analisar
+      if (r.adRows.length === 0) continue;
+      const best = r.summary.best;
       await deps.db.updateCandidateScore(r.candidate.id, {
-        score: r.score.score,
-        level: r.score.level,
-        reasons: r.score.reasons,
-        evidence: r.score.evidence,
+        score: r.score,
+        level: r.level,
+        reasons: best ? [best.ev.motivo] : [],
+        evidence: r.evidence,
         selected: true,
-        selectionReason: `Empresa analisada (modo anunciante). Evidência ${r.score.level}. ${r.score.reasons.join('; ')}`,
+        selectionReason: `Empresa analisada (modo anunciante). Melhor anúncio: ${best?.ev.motivo ?? 'não coletado'}.`,
       });
     }
-    const analisados = ranked.filter((r) => r.ads.length > 0).length;
-    const notice =
-      analisados === 0
-        ? 'Nenhum anúncio próprio encontrado para a empresa informada.'
-        : null;
+    const analisados = ranked.filter((r) => r.adRows.length > 0).length;
+    const notice = analisados === 0 ? 'Nenhum anúncio próprio encontrado para a empresa informada.' : null;
     await deps.db.setInvestigationStatus(ctx.investigationId, 'rodando', { notice });
     return { modo: 'anunciante', analisados, aviso: notice };
   }
 
+  // Modo "concorrentes": Selecionado = tem ≥1 anúncio de evidência ALTA.
   const sel = selectScaled(
-    ranked.map((r) => ({ candidate: r.candidate, ads: r.ads.map((a) => a.ad), score: r.score })),
+    ranked.map((r) => ({
+      candidate: r.candidate,
+      ads: r.adRows.map((a) => a.ad),
+      score: {
+        score: r.score,
+        reasons: r.summary.best ? [r.summary.best.ev.motivo] : [],
+        level: r.level,
+        passesStrong: r.summary.hasHigh, // "forte" = tem anúncio de evidência alta
+        evidence: r.evidence,
+      },
+    })),
     ctx.competitors,
     now,
   );
@@ -375,7 +404,7 @@ async function stepPontuar(deps: Deps, ctx: Ctx): Promise<unknown> {
       reasons: s.score.reasons,
       evidence: s.score.evidence,
       selected: true,
-      selectionReason: `Evidência ${s.score.level}. ${s.score.reasons.join('; ')}`,
+      selectionReason: `Tem anúncio de evidência ALTA. Melhor anúncio: ${s.score.reasons[0] ?? 'não coletado'}.`,
     });
   }
 
@@ -389,6 +418,10 @@ async function stepPontuar(deps: Deps, ctx: Ctx): Promise<unknown> {
 }
 
 // ── 4. Escolher criativos campeões ───────────────────────────
+// Campeões = top anúncios de evidência ALTA do anunciante, na ordem do nível →
+// dias no ar → versões. No modo "anunciante", se houver menos de
+// championCreativesMin de nível alto, completa com os melhores seguintes
+// (médio/baixo). Os limites de vídeos/minutos são respeitados adiante.
 async function stepEscolherCriativos(deps: Deps, ctx: Ctx): Promise<unknown> {
   const selected = await deps.db.getSelectedCandidatesWithAds(ctx.investigationId);
   const now = deps.clock.now();
@@ -396,7 +429,7 @@ async function stepEscolherCriativos(deps: Deps, ctx: Ctx): Promise<unknown> {
   let criativos = 0;
 
   for (const { ads } of selected) {
-    const champions = pickChampions(ads, ctx.limits, now);
+    const champions = pickChampions(ads, ctx.limits, ctx.mode, now);
     await deps.db.markChampionAds(champions.map((a) => a.id));
 
     for (const adRow of champions) {
@@ -430,26 +463,31 @@ async function stepEscolherCriativos(deps: Deps, ctx: Ctx): Promise<unknown> {
   return { criativos, limiteVideos: ctx.limits.maxVideosPerInvestigation };
 }
 
-function pickChampions(ads: AdRow[], limits: InvestigationLimits, now: number): AdRow[] {
-  const scored = ads
-    .map((a) => ({ a, s: adChampionScore(a.ad, now) }))
-    .sort((x, y) => {
-      if (y.s !== x.s) return y.s - x.s;
-      // desempate: mais antigo primeiro
-      return (x.a.ad.startDate ?? Infinity) - (y.a.ad.startDate ?? Infinity);
-    });
-  const take = Math.min(limits.championCreativesMax, Math.max(limits.championCreativesMin, 0));
-  return scored.slice(0, Math.min(take, scored.length)).map((x) => x.a);
-}
+function pickChampions(
+  ads: AdRow[],
+  limits: InvestigationLimits,
+  mode: InvestigationMode,
+  now: number,
+): AdRow[] {
+  const byArchive = new Map(ads.map((a) => [a.ad.adArchiveId, a]));
+  const summary = summarizeCandidateAds(ads.map((a) => a.ad), now);
 
-function adChampionScore(ad: NormalizedAd, now: number): number {
-  const days = adDaysLive(ad, now) ?? 0;
-  return (
-    (ad.variations || 0) * 2 +
-    Math.min(days / 30, 6) +
-    (ad.videos.length > 0 ? 2 : 0) +
-    (isActionCta(ad.ctaText) ? 1 : 0)
-  );
+  // Prioridade: anúncios de evidência ALTA (já na ordem nível→dias→versões).
+  let chosen = summary.evidences.filter((e) => e.ev.nivel === 'alto');
+
+  // Modo anunciante: se faltam altos, completa com os melhores seguintes.
+  if (mode === 'anunciante' && chosen.length < limits.championCreativesMin) {
+    for (const e of summary.evidences) {
+      if (chosen.length >= limits.championCreativesMin) break;
+      if (!chosen.includes(e)) chosen.push(e);
+    }
+  }
+
+  const take = Math.max(limits.championCreativesMax, 0);
+  return chosen
+    .slice(0, take)
+    .map((e) => byArchive.get(e.ad.adArchiveId))
+    .filter((a): a is AdRow => Boolean(a));
 }
 
 // ── 5. Baixar mídia ──────────────────────────────────────────

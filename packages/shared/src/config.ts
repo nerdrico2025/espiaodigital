@@ -43,10 +43,23 @@ export const EVIDENCE_LEVEL_CUTOFFS = {
 /**
  * Limiar "Quase lá": evidência média que NÃO é selecionada nem baixa mídia,
  * só aparece rotulada na seção "Candidatos avaliados".
+ * (Usado só no fallback de investigações antigas, sem evidência por anúncio.)
  */
 export const NEARLY_THRESHOLDS = {
   minDays: 14,
   minVariations: 2,
+};
+
+/**
+ * Limiares de evidência POR ANÚNCIO (editável). Decidem o nível de cada anúncio:
+ *   alto  = highMinDays+ dias E highMinVersions+ versões
+ *   médio = highMinDays+ dias com 1–2 versões, OU midMinDays–(highMinDays-1) dias com highMinVersions+ versões
+ *   baixo = o resto
+ */
+export const AD_EVIDENCE_THRESHOLDS = {
+  highMinDays: 30,
+  highMinVersions: 3,
+  midMinDays: 14,
 };
 
 /** CTAs considerados "de ação". Normalizados (lowercase, sem acento). */
