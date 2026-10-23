@@ -70,6 +70,7 @@ export class SupabaseDb implements Db {
       competitors: data.competitors,
       onlyActive: data.only_active,
       config: data.config ?? null,
+      mode: data.mode === 'anunciante' ? 'anunciante' : 'concorrentes',
     };
   }
 

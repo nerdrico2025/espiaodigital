@@ -61,6 +61,7 @@ export default async function InvestigationDetail({ params }: { params: { id: st
   }
 
   const running = inv.status === 'rodando' || inv.status === 'pendente';
+  const isAnunciante = inv.mode === 'anunciante';
 
   return (
     <div>
@@ -76,8 +77,21 @@ export default async function InvestigationDetail({ params }: { params: { id: st
         <div>
           <h1 className="text-2xl font-semibold">{inv.query}</h1>
           <p className="text-sm text-gray-500">
-            País {inv.country} · {inv.competitors} concorrentes · criada {dateFmt(inv.created_at)}
+            {isAnunciante ? (
+              <>Modo: analisar anunciante · País {inv.country}</>
+            ) : (
+              <>
+                Modo: descobrir concorrentes · País {inv.country} · {inv.competitors} concorrentes
+              </>
+            )}{' '}
+            · criada {dateFmt(inv.created_at)}
           </p>
+          {!isAnunciante && (
+            <p className="mt-1 text-sm text-gray-600">
+              <span className="font-medium">Referência:</span> {inv.query}{' '}
+              <span className="text-gray-400">(excluída da lista de concorrentes)</span>
+            </p>
+          )}
         </div>
         <div className="flex items-center gap-2">
           <span className={`badge ${STATUS_STYLE[inv.status]}`}>{STATUS_PT[inv.status]}</span>
@@ -151,7 +165,7 @@ export default async function InvestigationDetail({ params }: { params: { id: st
                 <table className="w-full text-left text-sm">
                   <thead>
                     <tr className="border-b border-gray-200 text-xs text-gray-500">
-                      <th className="py-2 pr-3">Concorrente</th>
+                      <th className="py-2 pr-3">{isAnunciante ? 'Empresa' : 'Concorrente'}</th>
                       <th className="px-2">Anúncios</th>
                       <th className="px-2">Dias</th>
                       <th className="px-2">Variações</th>
@@ -172,7 +186,9 @@ export default async function InvestigationDetail({ params }: { params: { id: st
                             <div className="font-medium">{c.name}</div>
                             {c.domain && <div className="text-xs text-gray-400">{c.domain}</div>}
                           </td>
-                          <td className="px-2 tabular-nums">{m.adsCollected ?? '—'}</td>
+                          <td className="px-2 tabular-nums">
+                            {m.adsCollected ?? <span className="text-gray-400">não coletado</span>}
+                          </td>
                           <td className="px-2 tabular-nums">{m.daysLive ?? '—'}</td>
                           <td className="px-2 tabular-nums">{m.maxVariations ?? '—'}</td>
                           <td className="px-2 tabular-nums">{m.distinctPlatforms ?? '—'}</td>
@@ -191,11 +207,16 @@ export default async function InvestigationDetail({ params }: { params: { id: st
             )}
           </div>
 
+          <h2 className="text-lg font-semibold">
+            {isAnunciante ? 'Anúncios escalados desta empresa' : 'Concorrentes selecionados'}
+          </h2>
           {cands.length === 0 ? (
             <div className="card text-sm text-gray-500">
               {running
-                ? 'Processando… os concorrentes selecionados aparecem aqui ao final da pontuação.'
-                : 'Nenhum concorrente com evidência forte foi selecionado.'}
+                ? 'Processando… os anúncios campeões aparecem aqui ao final do pipeline.'
+                : isAnunciante
+                  ? 'Nenhum anúncio próprio foi encontrado para esta empresa.'
+                  : 'Nenhum concorrente com evidência forte foi selecionado.'}
             </div>
           ) : (
             cands.map((c) => {

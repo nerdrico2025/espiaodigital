@@ -7,11 +7,23 @@ import {
   adDaysLive,
   round,
   type InvestigationLimits,
+  type InvestigationMode,
   type NormalizedAd,
   type StepName,
 } from '@espiao/shared';
 import type { AdRow, CandidateRow, Deps } from '../interfaces.js';
 import { filterOwnAds, mostFrequentPageId } from './normalize.js';
+
+/** Normaliza uma referência (URL ou nome) para comparação: host sem www, minúsculo. */
+function normalizeRef(s: string | null | undefined): string {
+  if (!s) return '';
+  return s
+    .trim()
+    .toLowerCase()
+    .replace(/^https?:\/\//, '')
+    .replace(/^www\./, '')
+    .replace(/\/.*$/, '');
+}
 
 export function errMessage(e: unknown): string {
   if (e instanceof Error) return e.message;
@@ -24,6 +36,9 @@ interface Ctx {
   country: string;
   onlyActive: boolean;
   competitors: number;
+  mode: InvestigationMode;
+  /** Texto de referência (query) — usado para excluir a própria empresa dos candidatos. */
+  reference: string;
   // caminhos de áudio extraídos nesta execução (efêmero).
   audioPaths: Map<string, string>;
 }
@@ -44,6 +59,8 @@ export async function runInvestigation(deps: Deps, investigationId: string): Pro
     country: inv.country,
     onlyActive: inv.onlyActive,
     competitors: inv.competitors,
+    mode: inv.mode === 'anunciante' ? 'anunciante' : 'concorrentes',
+    reference: inv.query,
     audioPaths: new Map(),
   };
 
@@ -99,13 +116,61 @@ async function runStep(
 // ── 1. Descobrir candidatos ──────────────────────────────────
 async function stepDescobrir(deps: Deps, ctx: Ctx): Promise<unknown> {
   const inv = await deps.db.getInvestigation(ctx.investigationId);
+
+  // Modo "anunciante": NÃO há descoberta. A empresa informada é o único candidato.
+  if (ctx.mode === 'anunciante') {
+    const raw = inv.query.trim();
+    const isUrl = /^https?:\/\//i.test(raw) || /\.[a-z]{2,}($|\/)/i.test(raw);
+    const domain = isUrl ? normalizeRef(raw) : null;
+    const name = domain ? domain.replace(/\.[a-z.]+$/i, '') : raw;
+    await deps.db.insertCandidates(ctx.investigationId, [
+      {
+        id: 'anunciante',
+        name: name || raw,
+        domain,
+        facebookPage: null,
+        offerType: null,
+        source: 'anunciante (empresa informada)',
+      },
+    ]);
+    await deps.db.addEvent(
+      ctx.investigationId,
+      'descobrir',
+      'rodando',
+      `Modo "analisar anunciante": sem descoberta; analisando "${name || raw}" como empresa única.`,
+    );
+    return { modo: 'anunciante', candidatos: 1 };
+  }
+
   const { candidates, cost } = await deps.discovery.discover(inv, {
     min: ctx.limits.minCandidates,
     max: ctx.limits.maxCandidates,
   });
-  await deps.db.insertCandidates(ctx.investigationId, candidates);
+
+  // Exclui a própria referência da lista de concorrentes (best-effort por
+  // domínio/nome); ela aparece na tela só como "Referência".
+  const ref = normalizeRef(inv.query);
+  const refRoot = ref.split('.')[0];
+  const filtered = candidates.filter((c) => {
+    const cd = normalizeRef(c.domain);
+    const cn = (c.name ?? '').trim().toLowerCase();
+    if (ref && (cd === ref || cn === ref)) return false;
+    if (ref.includes('.') && cd && cd.split('.')[0] === refRoot) return false;
+    return true;
+  });
+  const excluidos = candidates.length - filtered.length;
+
+  await deps.db.insertCandidates(ctx.investigationId, filtered);
   for (const c of cost) await deps.db.addCost(ctx.investigationId, c);
-  return { candidatos: candidates.length };
+  if (excluidos > 0) {
+    await deps.db.addEvent(
+      ctx.investigationId,
+      'descobrir',
+      'rodando',
+      `Referência "${inv.query}" excluída da lista de concorrentes (${excluidos} removido(s)).`,
+    );
+  }
+  return { modo: 'concorrentes', candidatos: filtered.length, referenciaExcluida: excluidos };
 }
 
 // ── 2. Buscar anúncios (Apify / Meta Ad Library) ─────────────
@@ -272,6 +337,29 @@ async function stepPontuar(deps: Deps, ctx: Ctx): Promise<unknown> {
         adsPerCandidateLimit: ctx.limits.adsPerCandidate,
       },
     });
+  }
+
+  // Modo "anunciante": a empresa informada é sempre analisada (não depende de
+  // passar na evidência forte), para gerar campeões/mídia/transcrição.
+  if (ctx.mode === 'anunciante') {
+    for (const r of ranked) {
+      if (r.ads.length === 0) continue; // sem anúncios próprios: nada a analisar
+      await deps.db.updateCandidateScore(r.candidate.id, {
+        score: r.score.score,
+        level: r.score.level,
+        reasons: r.score.reasons,
+        evidence: r.score.evidence,
+        selected: true,
+        selectionReason: `Empresa analisada (modo anunciante). Evidência ${r.score.level}. ${r.score.reasons.join('; ')}`,
+      });
+    }
+    const analisados = ranked.filter((r) => r.ads.length > 0).length;
+    const notice =
+      analisados === 0
+        ? 'Nenhum anúncio próprio encontrado para a empresa informada.'
+        : null;
+    await deps.db.setInvestigationStatus(ctx.investigationId, 'rodando', { notice });
+    return { modo: 'anunciante', analisados, aviso: notice };
   }
 
   const sel = selectScaled(

@@ -7,8 +7,33 @@ import {
   resolveLimits,
   INVESTIGATION_CONFIG_BOUNDS,
   type InvestigationConfig,
+  type InvestigationMode,
 } from '@espiao/shared';
 import { usdFmt } from '@/lib/format';
+
+// Textos de cada modo (PT simples).
+const MODES: {
+  value: InvestigationMode;
+  title: string;
+  hint: string;
+  fieldLabel: string;
+  placeholder: string;
+}[] = [
+  {
+    value: 'concorrentes',
+    title: 'Descobrir concorrentes',
+    hint: 'Informe uma referência; nós achamos os concorrentes dela e analisamos os anúncios escalados.',
+    fieldLabel: 'App, nicho ou URL de referência (vamos achar os concorrentes dele)',
+    placeholder: 'ex.: app de finanças pessoais / https://concorrente.com',
+  },
+  {
+    value: 'anunciante',
+    title: 'Analisar este anunciante',
+    hint: 'Analisa só a empresa informada: busca, pontua e analisa os anúncios escalados dela (sem descobrir concorrentes).',
+    fieldLabel: 'URL ou nome da empresa que você quer analisar',
+    placeholder: 'ex.: https://zeely.ai / Zeely',
+  },
+];
 
 // Campos de "Opções avançadas". A key casa com InvestigationConfig.
 const ADVANCED_FIELDS: {
@@ -23,12 +48,15 @@ const ADVANCED_FIELDS: {
 
 export default function NewInvestigationPage() {
   const router = useRouter();
+  const [mode, setMode] = useState<InvestigationMode>('concorrentes');
   const [query, setQuery] = useState('');
   const [country, setCountry] = useState('BR');
   const [competitors, setCompetitors] = useState(5);
   const [onlyActive, setOnlyActive] = useState(true);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const modeInfo = MODES.find((m) => m.value === mode)!;
 
   // Guardadas como string para permitir campo vazio (= usa o padrão fixo).
   // Pré-preenchidas com os padrões de teste de INVESTIGATION_CONFIG_BOUNDS.
@@ -41,10 +69,10 @@ export default function NewInvestigationPage() {
 
   // Config limpa (campos vazios omitidos → caem no padrão) para envio e estimativa.
   const config = useMemo(() => clampInvestigationConfig(advanced), [advanced]);
-  // Recalcula a estimativa em tempo real conforme os campos mudam.
+  // Recalcula a estimativa em tempo real conforme os campos/modo mudam.
   const estimate = useMemo(
-    () => estimateInvestigationCost(competitors, resolveLimits(config)),
-    [competitors, config],
+    () => estimateInvestigationCost(competitors, resolveLimits(config), mode),
+    [competitors, config, mode],
   );
 
   async function onSubmit(e: React.FormEvent) {
@@ -54,7 +82,7 @@ export default function NewInvestigationPage() {
     const res = await fetch('/api/investigations', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query, country, competitors, onlyActive, config }),
+      body: JSON.stringify({ mode, query, country, competitors, onlyActive, config }),
     });
     setLoading(false);
     if (!res.ok) {
@@ -69,23 +97,48 @@ export default function NewInvestigationPage() {
   return (
     <div className="mx-auto max-w-xl">
       <h1 className="mb-1 text-2xl font-semibold">Nova investigação</h1>
-      <p className="mb-5 text-sm text-gray-500">
-        Informe um nicho, o nome de um app, ou a URL de um concorrente de referência.
-      </p>
+      <p className="mb-5 text-sm text-gray-500">{modeInfo.hint}</p>
 
       <form onSubmit={onSubmit} className="card space-y-4">
+        {/* Seletor de modo */}
         <div>
-          <label className="label">Nicho, app ou URL do concorrente</label>
+          <label className="label">O que você quer fazer?</label>
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+            {MODES.map((m) => {
+              const active = m.value === mode;
+              return (
+                <button
+                  type="button"
+                  key={m.value}
+                  onClick={() => setMode(m.value)}
+                  className={`rounded-lg border p-3 text-left text-sm transition ${
+                    active
+                      ? 'border-brand bg-brand-soft text-brand'
+                      : 'border-gray-200 hover:border-gray-300'
+                  }`}
+                >
+                  <div className="font-medium">{m.title}</div>
+                  <div className={`mt-0.5 text-xs ${active ? 'text-brand' : 'text-gray-500'}`}>
+                    {m.value === 'concorrentes' ? 'Acha os concorrentes da referência' : 'Só a empresa informada'}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        <div>
+          <label className="label">{modeInfo.fieldLabel}</label>
           <input
             className="input"
-            placeholder="ex.: app de finanças pessoais / https://concorrente.com"
+            placeholder={modeInfo.placeholder}
             required
             value={query}
             onChange={(e) => setQuery(e.target.value)}
           />
         </div>
 
-        <div className="grid grid-cols-2 gap-4">
+        <div className={`grid gap-4 ${mode === 'anunciante' ? 'grid-cols-1' : 'grid-cols-2'}`}>
           <div>
             <label className="label">País</label>
             <select className="input" value={country} onChange={(e) => setCountry(e.target.value)}>
@@ -95,17 +148,19 @@ export default function NewInvestigationPage() {
               <option value="ALL">Todos (ALL)</option>
             </select>
           </div>
-          <div>
-            <label className="label">Quantidade de concorrentes</label>
-            <input
-              type="number"
-              min={1}
-              max={20}
-              className="input"
-              value={competitors}
-              onChange={(e) => setCompetitors(Math.max(1, Math.min(20, Number(e.target.value))))}
-            />
-          </div>
+          {mode === 'concorrentes' && (
+            <div>
+              <label className="label">Quantidade de concorrentes</label>
+              <input
+                type="number"
+                min={1}
+                max={20}
+                className="input"
+                value={competitors}
+                onChange={(e) => setCompetitors(Math.max(1, Math.min(20, Number(e.target.value))))}
+              />
+            </div>
+          )}
         </div>
 
         <label className="flex items-center gap-2 text-sm">
@@ -125,7 +180,9 @@ export default function NewInvestigationPage() {
             Deixe um campo em branco para usar o padrão do sistema.
           </p>
           <div className="mt-3 grid grid-cols-2 gap-4">
-            {ADVANCED_FIELDS.map(({ key, label }) => {
+            {ADVANCED_FIELDS.filter(
+              (f) => !(mode === 'anunciante' && f.key === 'candidates'),
+            ).map(({ key, label }) => {
               const b = INVESTIGATION_CONFIG_BOUNDS[key];
               return (
                 <div key={key}>

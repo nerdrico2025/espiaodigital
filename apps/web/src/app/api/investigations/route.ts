@@ -14,13 +14,16 @@ export async function POST(req: Request) {
   if (!body?.query || typeof body.query !== 'string') {
     return NextResponse.json({ error: 'Informe o nicho, app ou URL.' }, { status: 400 });
   }
-  const competitors = Math.max(1, Math.min(20, Number(body.competitors) || 5));
+  const mode = body.mode === 'anunciante' ? 'anunciante' : 'concorrentes';
   const country = String(body.country || 'BR').toUpperCase();
   const onlyActive = body.onlyActive !== false;
+  // No modo "anunciante" há uma única empresa (sem descoberta de concorrentes).
+  const competitors =
+    mode === 'anunciante' ? 1 : Math.max(1, Math.min(20, Number(body.competitors) || 5));
 
   // Opções avançadas: valida/clampa e deixa só os campos preenchidos.
   const config = clampInvestigationConfig(body.config);
-  const est = estimateInvestigationCost(competitors, resolveLimits(config));
+  const est = estimateInvestigationCost(competitors, resolveLimits(config), mode);
 
   // Usa service role para criar investigação + job + custo estimado atomicamente.
   const admin = createAdminClient();
@@ -34,6 +37,7 @@ export async function POST(req: Request) {
       competitors,
       only_active: onlyActive,
       config,
+      mode,
       status: 'pendente',
       estimated_cost_usd: est.total,
     })

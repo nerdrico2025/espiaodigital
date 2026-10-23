@@ -36,6 +36,13 @@ export type JobStatus = 'pendente' | 'rodando' | 'concluida' | 'falhou';
 
 export type EvidenceLevel = 'alto' | 'medio' | 'baixo';
 
+/**
+ * Modo da investigação:
+ * - 'concorrentes': descobre concorrentes da referência informada (padrão).
+ * - 'anunciante': analisa só a empresa informada (sem descoberta).
+ */
+export type InvestigationMode = 'concorrentes' | 'anunciante';
+
 export interface InvestigationInput {
   /** Nome do app/nicho OU URL do concorrente de referência. */
   query: string;
@@ -45,6 +52,8 @@ export interface InvestigationInput {
   competitors: number;
   /** Só anúncios ativos (padrão true). */
   onlyActive: boolean;
+  /** Modo de operação (padrão 'concorrentes'). */
+  mode: InvestigationMode;
 }
 
 export interface Candidate {

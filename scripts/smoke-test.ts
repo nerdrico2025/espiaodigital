@@ -21,7 +21,7 @@ import { RealTranscriber } from '../apps/worker/src/providers/transcriber.js';
 import { RealMedia, type Uploader } from '../apps/worker/src/providers/media.js';
 import { filterOwnAds, mostFrequentPageId, adPageId } from '../apps/worker/src/pipeline/normalize.js';
 import { normalizeClaimedJob } from '../apps/worker/src/db/supabase-db.js';
-import { resolveLimits, clampInvestigationConfig, DEFAULT_LIMITS, classifyCandidate } from '@espiao/shared';
+import { resolveLimits, clampInvestigationConfig, DEFAULT_LIMITS, classifyCandidate, estimateInvestigationCost } from '@espiao/shared';
 
 const line = '─'.repeat(60);
 
@@ -184,6 +184,7 @@ async function main() {
   const vQuase = classifyCandidate({ ...base, adsCollected: 20, daysLive: 20, maxVariations: 2, noOwnAds: false }, false);
   const vNovo = classifyCandidate({ ...base, adsCollected: 20, daysLive: 5, maxVariations: 1, noOwnAds: false }, false);
   const vSemAnuncios = classifyCandidate({ ...base, adsCollected: 0, daysLive: null, maxVariations: 0, noOwnAds: true }, false);
+  const vLongo = classifyCandidate({ ...base, adsCollected: 20, daysLive: 70, maxVariations: 1, noOwnAds: false }, false);
   const classifyChecks: [string, boolean][] = [
     ['selecionado → status selecionado', vSel.status === 'selecionado'],
     ['20 dias e 2 variações → Quase lá', vQuase.status === 'quase' && vQuase.label === 'Quase lá'],
@@ -192,6 +193,21 @@ async function main() {
     ['sem anúncios próprios → motivo correto', vSemAnuncios.reason === 'nenhum anúncio próprio encontrado'],
     ['amostra pequena sinalizada (20 ≤ 30)', vQuase.smallSample === true],
     ['amostra pequena não dispara sem anúncios', vSemAnuncios.smallSample === false],
+    ['70 dias e 1 variação → Quase lá (muito tempo no ar)',
+      vLongo.status === 'quase' && vLongo.reason.includes('muito tempo no ar')],
+  ];
+
+  // ── Estimativa de custo por modo ───────────────────────────
+  const limitsCost = resolveLimits({});
+  const custoConc = estimateInvestigationCost(5, limitsCost, 'concorrentes');
+  const custoAnun = estimateInvestigationCost(1, limitsCost, 'anunciante');
+  const costModeChecks: [string, boolean][] = [
+    ['modo concorrentes inclui descoberta EXA', custoConc.entries.some((e) => e.provider === 'exa')],
+    ['modo anunciante NÃO inclui EXA', !custoAnun.entries.some((e) => e.provider === 'exa')],
+    ['modo anunciante NÃO inclui extração de candidatos',
+      !custoAnun.entries.some((e) => e.unit === 'extracao-candidatos')],
+    ['modo anunciante custa menos que concorrentes', custoAnun.total < custoConc.total],
+    ['modo anunciante tem linha Apify', custoAnun.entries.some((e) => e.provider === 'apify')],
   ];
 
   // ── Verificações (assert) ──────────────────────────────────
@@ -199,6 +215,7 @@ async function main() {
     ...queueChecks,
     ...configChecks,
     ...classifyChecks,
+    ...costModeChecks,
     ['investigação concluída', db.status === 'concluida'],
     ['selecionou exatamente 2 concorrentes', selected.length === 2],
     ['pelo menos 1 vídeo transcrito', transcribed.length >= 1],

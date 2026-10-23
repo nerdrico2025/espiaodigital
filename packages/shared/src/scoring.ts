@@ -173,6 +173,19 @@ export function classifyCandidate(
     };
   }
 
+  // Caso especial: muito tempo no ar, mas poucas variações (1–2).
+  // Costuma ser amostra pequena — vale subir "Anúncios por candidato".
+  const longRunningFewVar =
+    days != null && days >= 60 && variations >= 1 && variations < t.strongMinVariations;
+  if (longRunningFewVar) {
+    return {
+      status: 'quase',
+      label: 'Quase lá',
+      reason: 'muito tempo no ar, poucas variações (pode ser amostra pequena)',
+      smallSample,
+    };
+  }
+
   // Motivos de não atingir evidência forte (30+ dias E 3+ variações).
   const faltas: string[] = [];
   if (days == null) faltas.push('sem data de veiculação');
