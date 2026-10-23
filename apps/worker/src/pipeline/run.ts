@@ -6,6 +6,8 @@ import {
   computeAdEvidences,
   summarizeCandidateAds,
   adDaysLive,
+  temNarracao,
+  SEM_NARRACAO_MSG,
   round,
   type InvestigationLimits,
   type InvestigationMode,
@@ -607,7 +609,16 @@ async function stepAnalisar(deps: Deps, ctx: Ctx): Promise<unknown> {
         linkUrl: cr.adLinkUrl,
         context: { brand: cr.candidateName, domain: cr.candidateDomain },
       });
-      await deps.db.updateCreative(cr.id, { analysis: r.analysis, status: 'analisado' });
+      // Vídeo sem fala: registra na análise (sem inventar narração).
+      const analysis = { ...r.analysis } as typeof r.analysis & {
+        semNarracao?: boolean;
+        narracaoObs?: string;
+      };
+      if (cr.mediaType === 'video' && !temNarracao(cr.transcription)) {
+        analysis.semNarracao = true;
+        analysis.narracaoObs = SEM_NARRACAO_MSG;
+      }
+      await deps.db.updateCreative(cr.id, { analysis, status: 'analisado' });
       for (const c of r.cost) await deps.db.addCost(ctx.investigationId, c);
       analisados++;
     } catch (e) {

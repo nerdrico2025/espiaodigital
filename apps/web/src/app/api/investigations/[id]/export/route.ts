@@ -1,4 +1,11 @@
-import { classifyCandidate, type CandidateMetrics } from '@espiao/shared';
+import {
+  classifyCandidate,
+  mediaFileName,
+  slug,
+  temNarracao,
+  SEM_NARRACAO_MSG,
+  type CandidateMetrics,
+} from '@espiao/shared';
 import { createClient } from '@/lib/supabase/server';
 
 export const dynamic = 'force-dynamic';
@@ -44,16 +51,36 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
     ({ ...(c.evidence ?? {}), ...(c.metrics ?? {}) }) as Partial<CandidateMetrics>;
   const nc = (v: unknown) => (v == null || v === '' ? 'não coletado' : v);
 
+  // Caminho/nome do arquivo de mídia de um criativo (pasta por anunciante).
+  const mediaPathOf = (cr: any, c: any): string => {
+    if (!cr.storage_path) return '';
+    const a = adById.get(cr.ad_id);
+    const name = mediaFileName({
+      candidate: c?.name ?? c?.domain ?? 'anunciante',
+      nivel: a?.nivel_evidencia ?? null,
+      dias: a?.dias_no_ar ?? null,
+      creativeId: cr.id,
+      storagePath: cr.storage_path,
+      mediaType: cr.media_type,
+    });
+    return `${slug(c?.name ?? c?.domain ?? 'anunciante')}/${name}`;
+  };
+  // Transcrição legível: mensagem padrão quando vídeo sem narração.
+  const transcricaoOf = (cr: any): string =>
+    cr.media_type === 'video' && !temNarracao(cr.transcription)
+      ? SEM_NARRACAO_MSG
+      : cr.transcription ?? '';
+
   if (format === 'csv') {
     const header = [
       'concorrente', 'dominio', 'nivel', 'dias_no_ar', 'versoes', 'ativo', 'motivo',
-      'criativo_tipo', 'criativo_status', 'transcricao', 'analise_hook', 'analise_angulo',
+      'criativo_tipo', 'criativo_status', 'arquivo_midia', 'transcricao', 'analise_hook', 'analise_angulo',
     ];
     const lines = [header.join(',')];
     for (const c of cands) {
       const ccrs = crs.filter((x) => x.candidate_id === c.id);
       if (ccrs.length === 0) {
-        lines.push(csvRow([c.name, c.domain, '', '', '', '', c.selection_reason, '', '', '', '', '']));
+        lines.push(csvRow([c.name, c.domain, '', '', '', '', c.selection_reason, '', '', '', '', '', '']));
       }
       for (const cr of ccrs) {
         const a = adById.get(cr.ad_id);
@@ -63,7 +90,7 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
             nc(a?.nivel_evidencia), nc(a?.dias_no_ar), nc(a?.versoes),
             a?.is_active == null ? 'não coletado' : a.is_active ? 'sim' : 'não',
             nc(a?.motivo),
-            cr.media_type, cr.status, cr.transcription,
+            cr.media_type, cr.status, mediaPathOf(cr, c) || 'não coletado', transcricaoOf(cr),
             cr.analysis?.hook ?? '', cr.analysis?.angulo ?? '',
           ]),
         );
@@ -85,7 +112,7 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
       lines.push(
         csvRow([
           c.name, c.domain, m.adsCollected ?? '', m.daysLive ?? '', m.maxVariations ?? '',
-          m.distinctPlatforms ?? '', m.distinctCountries ?? '', c.score, v.label, v.reason,
+          m.distinctPlatforms || 'não coletado', m.distinctCountries || 'não coletado', c.score, v.label, v.reason,
         ]),
       );
     }
@@ -119,7 +146,7 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
         : 'não coletado';
     md.push(
       `| ${c.name}${c.domain ? ` (${c.domain})` : ''} | ${anuncios} | ${melhor} | ` +
-        `${m.distinctPlatforms ?? '—'} | ${m.distinctCountries ?? '—'} | ${v.label} | ${v.reason} |`,
+        `${m.distinctPlatforms || 'não coletado'} | ${m.distinctCountries || 'não coletado'} | ${v.label} | ${v.reason} |`,
     );
   }
 
@@ -141,7 +168,8 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
         `- Dias no ar: ${nc(a?.dias_no_ar)} · Versões: ${nc(a?.versoes)} · Ativo: ${ativo}`,
       );
       md.push(`- Motivo: ${nc(a?.motivo)}`);
-      if (cr.transcription) md.push(`**Transcrição:** ${cr.transcription}`);
+      md.push(`- Arquivo de mídia: ${mediaPathOf(cr, c) || 'não coletado'}`);
+      if (cr.media_type === 'video') md.push(`**Transcrição:** ${transcricaoOf(cr)}`);
       if (cr.analysis) md.push('```json\n' + JSON.stringify(cr.analysis, null, 2) + '\n```');
     }
   }

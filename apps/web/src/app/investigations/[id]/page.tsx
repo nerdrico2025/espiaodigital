@@ -1,6 +1,12 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
-import { classifyCandidate, type CandidateMetrics, type CandidateStatus } from '@espiao/shared';
+import {
+  classifyCandidate,
+  temNarracao,
+  SEM_NARRACAO_MSG,
+  type CandidateMetrics,
+  type CandidateStatus,
+} from '@espiao/shared';
 import { createClient } from '@/lib/supabase/server';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { STATUS_PT, STATUS_STYLE, EVIDENCE_PT, usdFmt, dateFmt } from '@/lib/format';
@@ -108,6 +114,9 @@ export default async function InvestigationDetail({ params }: { params: { id: st
           <a className="btn-ghost" href={`/api/investigations/${params.id}/export?format=csv`}>
             Exportar .csv
           </a>
+          <a className="btn-ghost" href={`/api/investigations/${params.id}/media.zip`}>
+            Baixar todas as mídias (.zip)
+          </a>
         </div>
       </div>
 
@@ -203,8 +212,8 @@ export default async function InvestigationDetail({ params }: { params: { id: st
                               <span className="text-gray-400">não coletado</span>
                             )}
                           </td>
-                          <td className="px-2 tabular-nums">{m.distinctPlatforms ?? '—'}</td>
-                          <td className="px-2 tabular-nums">{m.distinctCountries ?? '—'}</td>
+                          <td className="px-2 text-xs">{ncLabel(m.distinctPlatforms)}</td>
+                          <td className="px-2 text-xs">{ncLabel(m.distinctCountries)}</td>
                           <td className="px-2">
                             <StatusBadge status={v.status} label={v.label} />
                           </td>
@@ -249,19 +258,25 @@ export default async function InvestigationDetail({ params }: { params: { id: st
                       {c.domain && <p className="text-sm text-gray-500">{c.domain}</p>}
                     </div>
                     <div className="text-right">
-                      <div className="text-sm text-gray-500">Score</div>
-                      <div className="text-xl font-bold text-brand">{c.score}</div>
                       <span className="badge bg-brand-soft text-brand">
                         Evidência {EVIDENCE_PT[c.evidence_level] ?? c.evidence_level}
                       </span>
+                      <div className="mt-2">
+                        <a
+                          className="btn-ghost text-xs"
+                          href={`/api/investigations/${params.id}/media.zip?candidate=${c.id}`}
+                        >
+                          Baixar todas as mídias (.zip)
+                        </a>
+                      </div>
                     </div>
                   </div>
 
                   <div className="mb-3 flex flex-wrap gap-2 text-xs text-gray-600">
                     <Evi label="Dias no ar" value={ev.daysLive} />
-                    <Evi label="Plataformas" value={ev.distinctPlatforms} />
+                    <Evi label="Plataformas" value={zeroAsNC(ev.distinctPlatforms)} />
                     <Evi label="Variações" value={ev.maxVariations} />
-                    <Evi label="Países" value={ev.distinctCountries} />
+                    <Evi label="Países" value={zeroAsNC(ev.distinctCountries)} />
                     <Evi label="Vídeo" value={ev.hasVideo ? 'sim' : 'não'} />
                     <Evi label="CTA ação" value={ev.hasActionCta ? 'sim' : 'não'} />
                   </div>
@@ -290,8 +305,9 @@ export default async function InvestigationDetail({ params }: { params: { id: st
                             <EvidenceSelo nivel={a?.nivel_evidencia ?? null} ativo={a?.is_active} />
                             {a?.motivo && <p className="mt-1 text-xs text-gray-600">{a.motivo}</p>}
                             <div className="mt-1 flex flex-wrap gap-1 text-[11px] text-gray-500">
-                              <AdLabel label="plataformas" value={a?.platforms?.length} />
-                              <AdLabel label="países" value={a?.countries?.length} />
+                              {/* 0 plataformas/países = não medido → "não coletado" */}
+                              <AdLabel label="plataformas" value={a?.platforms?.length || undefined} />
+                              <AdLabel label="países" value={a?.countries?.length || undefined} />
                               <AdLabel label="formato" value={cr.media_type} />
                               <AdLabel label="CTA" value={a?.cta_text || undefined} />
                             </div>
@@ -311,10 +327,30 @@ export default async function InvestigationDetail({ params }: { params: { id: st
                             </div>
                           )}
 
+                          {/* Download individual */}
+                          <div className="mt-2">
+                            {cr.storage_path ? (
+                              <a
+                                className="btn-ghost w-full text-center text-xs"
+                                href={`/api/creatives/${cr.id}/download`}
+                              >
+                                {cr.media_type === 'video' ? 'Baixar vídeo' : 'Baixar imagem'}
+                              </a>
+                            ) : (
+                              <span className="block w-full cursor-not-allowed rounded border border-gray-200 py-1 text-center text-xs text-gray-400">
+                                mídia indisponível
+                              </span>
+                            )}
+                          </div>
+
                           <div className="mt-2 space-y-2">
-                            {cr.transcription && (
+                            {cr.media_type === 'video' && (
                               <Expandable title="Transcrição">
-                                <p className="whitespace-pre-wrap">{cr.transcription}</p>
+                                {temNarracao(cr.transcription) ? (
+                                  <p className="whitespace-pre-wrap">{cr.transcription}</p>
+                                ) : (
+                                  <p className="text-gray-500">{SEM_NARRACAO_MSG}</p>
+                                )}
                               </Expandable>
                             )}
                             {cr.analysis && (
@@ -334,6 +370,18 @@ export default async function InvestigationDetail({ params }: { params: { id: st
         </div>
       </div>
     </div>
+  );
+}
+
+// Exibe número; 0/ausente vira "não coletado" (0 só quando medido de fato).
+function zeroAsNC(v: number | null | undefined): string {
+  return v == null || v === 0 ? 'não coletado' : String(v);
+}
+function ncLabel(v: number | null | undefined) {
+  return v == null || v === 0 ? (
+    <span className="text-gray-400">não coletado</span>
+  ) : (
+    <span className="tabular-nums">{v}</span>
   );
 }
 

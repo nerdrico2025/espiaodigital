@@ -21,7 +21,7 @@ import { RealTranscriber } from '../apps/worker/src/providers/transcriber.js';
 import { RealMedia, type Uploader } from '../apps/worker/src/providers/media.js';
 import { filterOwnAds, mostFrequentPageId, adPageId } from '../apps/worker/src/pipeline/normalize.js';
 import { normalizeClaimedJob } from '../apps/worker/src/db/supabase-db.js';
-import { resolveLimits, clampInvestigationConfig, DEFAULT_LIMITS, classifyCandidate, estimateInvestigationCost, adEvidenceLevel, computeAdEvidences, summarizeCandidateAds } from '@espiao/shared';
+import { resolveLimits, clampInvestigationConfig, DEFAULT_LIMITS, classifyCandidate, estimateInvestigationCost, adEvidenceLevel, computeAdEvidences, summarizeCandidateAds, mediaFileName, temNarracao } from '@espiao/shared';
 
 const line = '─'.repeat(60);
 
@@ -237,6 +237,25 @@ async function main() {
     ['10 dias + 5 versões → melhor anúncio baixo', sumBaixo.best?.ev.nivel === 'baixo' && !sumBaixo.hasHigh],
   ];
 
+  // ── Nome de arquivo de mídia + narração ────────────────────
+  const fnameVideo = mediaFileName({
+    candidate: 'ArcAds', nivel: 'medio', dias: 15, creativeId: 'a1b2c3d4-ffff', storagePath: 'inv/clip.mp4', mediaType: 'video',
+  });
+  const fnameImgNoExt = mediaFileName({
+    candidate: 'Empresa Legal!', nivel: 'alto', dias: 90, creativeId: 'deadbeef1234', storagePath: null, mediaType: 'image',
+  });
+  const fnameNoData = mediaFileName({
+    candidate: null, nivel: null, dias: null, creativeId: '112233aa', storagePath: 'x/y.webp', mediaType: 'image',
+  });
+  const mediaChecks: [string, boolean][] = [
+    ['nome de arquivo vídeo = arcads_medio_15d_a1b2c3.mp4', fnameVideo === 'arcads_medio_15d_a1b2c3.mp4'],
+    ['sem acento/espaço e ext por tipo (imagem→jpg)', fnameImgNoExt === 'empresa_legal_alto_90d_deadbe.jpg'],
+    ['dados ausentes viram "na" e ext do path (webp)', fnameNoData === 'item_na_nad_112233.webp'],
+    ['narração: vazio → false', temNarracao('') === false],
+    ['narração: 2 palavras → false', temNarracao('só música') === false],
+    ['narração: 3+ palavras → true', temNarracao('clique no link agora') === true],
+  ];
+
   // ── Estimativa de custo por modo ───────────────────────────
   const limitsCost = resolveLimits({});
   const custoConc = estimateInvestigationCost(5, limitsCost, 'concorrentes');
@@ -256,6 +275,7 @@ async function main() {
     ...configChecks,
     ...classifyChecks,
     ...adLevelChecks,
+    ...mediaChecks,
     ...costModeChecks,
     ['investigação concluída', db.status === 'concluida'],
     ['selecionou exatamente 2 concorrentes', selected.length === 2],
