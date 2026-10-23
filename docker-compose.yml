@@ -1,7 +1,8 @@
 # Deploy via Easypanel (serviço do tipo Compose).
 # O proxy do Easypanel cuida do HTTPS automático (portas 80/443) e roteia por
 # domínio para o serviço `web` na porta interna 3000. Por isso NÃO há Caddy,
-# nem mapeamento de portas para o host. Defina as variáveis ${VAR} no painel
+# nem mapeamento de portas para o host. Também NÃO declaramos rede customizada:
+# o Easypanel gerencia a rede do projeto. Defina as variáveis ${VAR} no painel
 # do Easypanel (Environment do serviço Compose).
 services:
   web:
@@ -20,7 +21,6 @@ services:
     # Porta interna; o proxy do Easypanel roteia o domínio até aqui.
     expose:
       - "3000"
-    networks: [espiao]
 
   worker:
     build:
@@ -40,7 +40,3 @@ services:
       TRANSCRIPTION_PROVIDER: ${TRANSCRIPTION_PROVIDER}
       TRANSCRIPTION_MODEL: ${TRANSCRIPTION_MODEL}
     # O worker não expõe portas; só consome a fila no Postgres (Supabase).
-    networks: [espiao]
-
-networks:
-  espiao:

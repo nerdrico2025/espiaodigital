@@ -18,6 +18,28 @@ import type {
 const toTs = (ms: number | null) => (ms == null ? null : new Date(ms).toISOString());
 const toMs = (ts: string | null) => (ts == null ? null : Date.parse(ts));
 
+export interface ClaimedJob {
+  id: string;
+  investigation_id: string;
+  [k: string]: unknown;
+}
+
+// A função claim_job tem `returns public.jobs`. Quando não há job, o `return null`
+// do plpgsql chega pelo PostgREST como UMA LINHA com todos os campos null
+// (ex.: { id: null, investigation_id: null, ... }) — não como `null` puro.
+// Também pode vir como array (SETOF) ou objeto único dependendo do cliente.
+// Normalizamos todos esses casos para `null` = "sem job", e só devolvemos um
+// job quando ele tem id E investigation_id, para nunca chamar getInvestigation
+// com id nulo.
+export function normalizeClaimedJob(data: unknown): ClaimedJob | null {
+  if (data == null) return null;
+  const row = Array.isArray(data) ? (data[0] ?? null) : data;
+  if (row == null || typeof row !== 'object') return null;
+  const r = row as Record<string, unknown>;
+  if (r.id == null || r.investigation_id == null) return null;
+  return r as ClaimedJob;
+}
+
 export class SupabaseDb implements Db {
   private sb: SupabaseClient;
   constructor(url: string, serviceRoleKey: string) {

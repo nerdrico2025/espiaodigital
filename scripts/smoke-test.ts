@@ -20,6 +20,7 @@ import { LlmAnalyzer } from '../apps/worker/src/providers/analyzer.js';
 import { RealTranscriber } from '../apps/worker/src/providers/transcriber.js';
 import { RealMedia, type Uploader } from '../apps/worker/src/providers/media.js';
 import { filterOwnAds, mostFrequentPageId, adPageId } from '../apps/worker/src/pipeline/normalize.js';
+import { normalizeClaimedJob } from '../apps/worker/src/db/supabase-db.js';
 
 const line = '─'.repeat(60);
 
@@ -126,8 +127,28 @@ async function main() {
   console.log(`\nCusto estimado (mock): US$ ${cost.toFixed(4)}`);
   console.log(`Custo final gravado: US$ ${(db.finalCost ?? 0).toFixed(4)}`);
 
+  // ── Fila vazia (claim_job) ─────────────────────────────────
+  // claim_job tem `returns public.jobs`; quando não há job, o PostgREST devolve
+  // uma linha com todos os campos null (não `null` puro). normalizeClaimedJob
+  // precisa tratar todos esses formatos como "sem job" e NUNCA liberar um job
+  // com id nulo (o que levaria a getInvestigation(null)).
+  const emptyRowAllNull = { id: null, investigation_id: null, status: null, attempts: null };
+  const validJob = { id: 'job_1', investigation_id: 'inv_1', status: 'rodando' };
+  const queueChecks: [string, boolean][] = [
+    ['fila vazia: null puro → sem job', normalizeClaimedJob(null) === null],
+    ['fila vazia: linha com campos null → sem job', normalizeClaimedJob(emptyRowAllNull) === null],
+    ['fila vazia: array vazio → sem job', normalizeClaimedJob([]) === null],
+    ['fila vazia: array com linha null → sem job', normalizeClaimedJob([emptyRowAllNull]) === null],
+    ['fila vazia: id presente mas investigation_id null → sem job',
+      normalizeClaimedJob({ id: 'x', investigation_id: null }) === null],
+    ['job válido → reivindicado', normalizeClaimedJob(validJob)?.id === 'job_1'],
+    ['job válido em array (SETOF) → reivindicado',
+      normalizeClaimedJob([validJob])?.investigation_id === 'inv_1'],
+  ];
+
   // ── Verificações (assert) ──────────────────────────────────
   const checks: [string, boolean][] = [
+    ...queueChecks,
     ['investigação concluída', db.status === 'concluida'],
     ['selecionou exatamente 2 concorrentes', selected.length === 2],
     ['pelo menos 1 vídeo transcrito', transcribed.length >= 1],
