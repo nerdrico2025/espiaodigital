@@ -21,7 +21,12 @@ async function claimJob(db: SupabaseDb): Promise<ClaimedJob | null> {
   return normalizeClaimedJob(data);
 }
 
-async function finishJob(db: SupabaseDb, jobId: string, status: 'concluida' | 'falhou', err?: string) {
+async function finishJob(
+  db: SupabaseDb,
+  jobId: string,
+  status: 'concluida' | 'falhou' | 'cancelada',
+  err?: string,
+) {
   await db.client
     .from('jobs')
     .update({ status, locked_at: null, locked_by: null, last_error: err ?? null })
@@ -32,6 +37,14 @@ async function main() {
   const env = readEnv();
   const { deps, db } = buildRealDeps(env);
   defaultLogger.info(`Worker iniciado (${WORKER_ID}). Transcrição: ${env.TRANSCRIPTION_PROVIDER}.`);
+
+  // Recuperação: libera jobs presos em 'rodando' sem atividade há > 15 min.
+  try {
+    const recovered = await db.recoverStaleJobs(15);
+    if (recovered > 0) defaultLogger.warn(`Recuperados ${recovered} job(s) presos em 'rodando'.`);
+  } catch (e) {
+    defaultLogger.warn('Falha ao recuperar jobs presos', errMessage(e));
+  }
 
   process.on('SIGTERM', () => {
     shuttingDown = true;
@@ -63,8 +76,14 @@ async function main() {
     defaultLogger.info(`Job ${job.id} reivindicado (investigação ${job.investigation_id}).`);
     try {
       await runInvestigation(deps, job.investigation_id);
-      await finishJob(db, job.id, 'concluida');
-      defaultLogger.info(`Job ${job.id} concluído.`);
+      // Pode ter sido cancelada no meio — não sobrescreve com 'concluida'.
+      if (await db.isCancelled(job.investigation_id)) {
+        await finishJob(db, job.id, 'cancelada');
+        defaultLogger.info(`Job ${job.id} cancelado.`);
+      } else {
+        await finishJob(db, job.id, 'concluida');
+        defaultLogger.info(`Job ${job.id} concluído.`);
+      }
     } catch (e) {
       const msg = errMessage(e);
       await finishJob(db, job.id, 'falhou', msg);

@@ -19,6 +19,7 @@ export const STATUS_PT: Record<string, string> = {
   rodando: 'Rodando',
   concluida: 'Concluída',
   falhou: 'Falhou',
+  cancelada: 'Cancelada',
 };
 
 export const STATUS_STYLE: Record<string, string> = {
@@ -26,6 +27,7 @@ export const STATUS_STYLE: Record<string, string> = {
   rodando: 'bg-blue-100 text-blue-700',
   concluida: 'bg-green-100 text-green-700',
   falhou: 'bg-red-100 text-red-700',
+  cancelada: 'bg-amber-100 text-amber-800',
 };
 
 export const EVIDENCE_PT: Record<string, string> = {

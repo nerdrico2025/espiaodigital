@@ -1,4 +1,4 @@
-import { STEP_ORDER } from '@espiao/shared';
+import { STEP_ORDER, type StepName } from '@espiao/shared';
 import { stepLabel } from '@/lib/format';
 import { RequeueButton } from './RequeueButton';
 
@@ -25,6 +25,7 @@ const DOT: Record<string, string> = {
 
 export function StepBar({
   investigationId,
+  steps,
   completed,
   current,
   jobStatus,
@@ -32,17 +33,19 @@ export function StepBar({
   events,
 }: {
   investigationId: string;
+  steps?: StepName[];
   completed: string[];
   current: string | null;
   jobStatus: string;
   lastError: string | null;
   events: EventRow[];
 }) {
+  const stepList = steps ?? STEP_ORDER;
   return (
     <div className="card">
       <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-gray-500">Etapas</h2>
       <ol className="space-y-2">
-        {STEP_ORDER.map((step) => {
+        {stepList.map((step) => {
           const st = stepStatus(step, completed, current, jobStatus);
           const lastEvent = [...events].reverse().find((e) => e.step === step);
           return (

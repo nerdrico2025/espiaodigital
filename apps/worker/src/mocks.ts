@@ -89,6 +89,19 @@ export class MemoryDb implements Db {
   async setCurrentStep(_inv: string, step: StepName) {
     this.currentStep = step;
   }
+  /** Teste: cancela quando o currentStep estiver em cancelAtStep. */
+  cancelAtStep: StepName | null = null;
+  async isCancelled(): Promise<boolean> {
+    if (this.status === 'cancelada') return true;
+    if (this.cancelAtStep && this.currentStep === this.cancelAtStep) {
+      this.status = 'cancelada';
+      return true;
+    }
+    return false;
+  }
+  async recoverStaleJobs(): Promise<number> {
+    return 0;
+  }
   async insertCandidates(investigationId: string, candidates: Candidate[]): Promise<CandidateRow[]> {
     const rows: CandidateRow[] = [];
     for (const c of candidates) {

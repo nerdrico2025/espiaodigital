@@ -97,6 +97,10 @@ export interface Db {
   getCompletedSteps(investigationId: string): Promise<StepName[]>;
   markStepCompleted(investigationId: string, step: StepName): Promise<void>;
   setCurrentStep(investigationId: string, step: StepName): Promise<void>;
+  /** true se a investigação foi marcada como 'cancelada'. */
+  isCancelled(investigationId: string): Promise<boolean>;
+  /** Marca como falhou os jobs presos em 'rodando' sem atividade há > minutes. Retorna quantos. */
+  recoverStaleJobs(minutes: number): Promise<number>;
 
   insertCandidates(investigationId: string, candidates: Candidate[]): Promise<CandidateRow[]>;
   updateCandidateScore(candidateId: string, patch: CandidateScorePatch): Promise<void>;

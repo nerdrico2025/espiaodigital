@@ -21,7 +21,7 @@ import { RealTranscriber } from '../apps/worker/src/providers/transcriber.js';
 import { RealMedia, type Uploader } from '../apps/worker/src/providers/media.js';
 import { filterOwnAds, mostFrequentPageId, adPageId } from '../apps/worker/src/pipeline/normalize.js';
 import { normalizeClaimedJob } from '../apps/worker/src/db/supabase-db.js';
-import { resolveLimits, clampInvestigationConfig, DEFAULT_LIMITS, classifyCandidate, estimateInvestigationCost, adEvidenceLevel, computeAdEvidences, summarizeCandidateAds, mediaFileName, temNarracao, detectFunnelTech } from '@espiao/shared';
+import { resolveLimits, clampInvestigationConfig, DEFAULT_LIMITS, classifyCandidate, estimateInvestigationCost, adEvidenceLevel, computeAdEvidences, summarizeCandidateAds, mediaFileName, temNarracao, detectFunnelTech, parseInvestigationMode, stepsForMode } from '@espiao/shared';
 
 const line = '─'.repeat(60);
 
@@ -296,7 +296,56 @@ async function main() {
   ];
 
   // ── Verificações (assert) ──────────────────────────────────
+  // ── Modo (fonte única + erro explícito) ───────────────────
+  let unknownThrew = false;
+  try {
+    parseInvestigationMode('xyz');
+  } catch {
+    unknownThrew = true;
+  }
+  const modeChecks: [string, boolean][] = [
+    ['parse de "pagina" = pagina', parseInvestigationMode('pagina') === 'pagina'],
+    ['parse de vazio = padrão (concorrentes)', parseInvestigationMode(undefined) === 'concorrentes'],
+    ['modo desconhecido lança erro explícito', unknownThrew],
+    ['etapas do modo página não incluem descoberta/ads',
+      !stepsForMode('pagina').includes('descobrir') && !stepsForMode('pagina').includes('buscar_ads')],
+    ['etapas do modo página incluem capturar_funil', stepsForMode('pagina').includes('capturar_funil')],
+  ];
+
+  // ── Modo página: investigação ponta a ponta (mocks) ────────
+  const pageInv = { id: 'inv_pg', query: 'https://pagina.com/vsl', country: 'BR', competitors: 1, onlyActive: true, mode: 'pagina' };
+  const { deps: dpg, db: dbpg } = makeMockDeps({ inv: pageInv as any, now });
+  await runInvestigation(dpg, 'inv_pg');
+  const pageModeChecks: [string, boolean][] = [
+    ['página: modo lido = pagina', parseInvestigationMode((dbpg.investigation as any).mode) === 'pagina'],
+    ['página: NÃO rodou descobrir nem buscar_ads',
+      !dbpg.completed.includes('descobrir') && !dbpg.completed.includes('buscar_ads')],
+    ['página: nenhum candidato criado (sem descoberta)', dbpg.candidates.size === 0],
+    ['página: nenhum custo de EXA/Apify', !dbpg.costs.some((c) => c.provider === 'exa' || c.provider === 'apify')],
+    ['página: rodou capturar_funil e processar_vsl',
+      dbpg.completed.includes('capturar_funil') && dbpg.completed.includes('processar_vsl')],
+    ['página: URL informada virou o passo inicial do funil',
+      dbpg.funnelSteps[0]?.url === 'https://pagina.com/vsl'],
+    ['página: concluída', dbpg.status === 'concluida'],
+  ];
+
+  // ── Cancelamento (mocks) ───────────────────────────────────
+  const { deps: dcx, db: dbcx } = makeMockDeps({ now });
+  dbcx.cancelAtStep = 'descobrir'; // cancela ao entrar na etapa seguinte
+  await runInvestigation(dcx, (dbcx.investigation as any).id);
+  const cancelChecks: [string, boolean][] = [
+    ['cancelada: status = cancelada', dbcx.status === 'cancelada'],
+    ['cancelada: parou antes de buscar_ads', !dbcx.completed.includes('buscar_ads')],
+    ['cancelada: preservou o já coletado (descobrir + candidatos)',
+      dbcx.completed.includes('descobrir') && dbcx.candidates.size > 0],
+    ['cancelada: preservou custos já registrados', dbcx.costs.length > 0],
+    ['cancelada: não marcou concluída', dbcx.status !== 'concluida'],
+  ];
+
   const checks: [string, boolean][] = [
+    ...modeChecks,
+    ...pageModeChecks,
+    ...cancelChecks,
     ...queueChecks,
     ...configChecks,
     ...classifyChecks,

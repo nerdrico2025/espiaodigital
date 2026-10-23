@@ -43,12 +43,39 @@ export type JobStatus = 'pendente' | 'rodando' | 'concluida' | 'falhou';
 export type EvidenceLevel = 'alto' | 'medio' | 'baixo';
 
 /**
- * Modo da investigação:
+ * Modo da investigação (fonte única — nunca duplicar as strings):
  * - 'concorrentes': descobre concorrentes da referência informada (padrão).
  * - 'anunciante': analisa só a empresa informada (sem descoberta).
  * - 'pagina': analisa só uma página/VSL informada (captura de funil direta).
  */
-export type InvestigationMode = 'concorrentes' | 'anunciante' | 'pagina';
+export const INVESTIGATION_MODES = ['concorrentes', 'anunciante', 'pagina'] as const;
+export type InvestigationMode = (typeof INVESTIGATION_MODES)[number];
+
+export const DEFAULT_INVESTIGATION_MODE: InvestigationMode = 'concorrentes';
+
+/** true se `v` é um modo válido. */
+export function isInvestigationMode(v: unknown): v is InvestigationMode {
+  return typeof v === 'string' && (INVESTIGATION_MODES as readonly string[]).includes(v);
+}
+
+/**
+ * Converte um valor em modo válido. `null`/`undefined` → padrão; qualquer outro
+ * valor inválido LANÇA erro explícito (nunca cai no padrão silenciosamente).
+ */
+export function parseInvestigationMode(v: unknown): InvestigationMode {
+  if (v == null || v === '') return DEFAULT_INVESTIGATION_MODE;
+  if (isInvestigationMode(v)) return v;
+  throw new Error(`Modo de investigação inválido: ${JSON.stringify(v)}`);
+}
+
+/** Etapas que SE APLICAM a cada modo (worker e barra de etapas usam a mesma lista). */
+export function stepsForMode(mode: InvestigationMode): StepName[] {
+  if (mode === 'pagina') {
+    // Página/VSL: sem descoberta/ads. Captura a página, processa a VSL e consolida.
+    return ['capturar_funil', 'processar_vsl', 'consolidar'];
+  }
+  return STEP_ORDER;
+}
 
 export interface InvestigationInput {
   /** Nome do app/nicho OU URL do concorrente de referência. */

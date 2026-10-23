@@ -1,5 +1,10 @@
 import { NextResponse } from 'next/server';
-import { estimateInvestigationCost, clampInvestigationConfig, resolveLimits } from '@espiao/shared';
+import {
+  estimateInvestigationCost,
+  clampInvestigationConfig,
+  resolveLimits,
+  parseInvestigationMode,
+} from '@espiao/shared';
 import { createClient } from '@/lib/supabase/server';
 import { createAdminClient } from '@/lib/supabase/admin';
 
@@ -14,8 +19,12 @@ export async function POST(req: Request) {
   if (!body?.query || typeof body.query !== 'string') {
     return NextResponse.json({ error: 'Informe o nicho, app ou URL.' }, { status: 400 });
   }
-  const mode =
-    body.mode === 'anunciante' ? 'anunciante' : body.mode === 'pagina' ? 'pagina' : 'concorrentes';
+  let mode;
+  try {
+    mode = parseInvestigationMode(body.mode); // erro explícito p/ modo inválido
+  } catch {
+    return NextResponse.json({ error: 'Modo de investigação inválido.' }, { status: 400 });
+  }
   const country = String(body.country || 'BR').toUpperCase();
   const onlyActive = body.onlyActive !== false;
   // "anunciante"/"pagina": um único alvo (sem descoberta de concorrentes).

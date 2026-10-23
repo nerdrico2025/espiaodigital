@@ -122,6 +122,37 @@ export class SupabaseDb implements Db {
     if (error) throw new Error(`markStepCompleted: ${error.message}`);
   }
 
+  async isCancelled(investigationId: string): Promise<boolean> {
+    const { data, error } = await this.sb
+      .from('investigations')
+      .select('status')
+      .eq('id', investigationId)
+      .single();
+    if (error) throw new Error(`isCancelled: ${error.message}`);
+    return (data as any)?.status === 'cancelada';
+  }
+
+  async recoverStaleJobs(minutes: number): Promise<number> {
+    const cutoff = new Date(Date.now() - minutes * 60_000).toISOString();
+    // Jobs presos em 'rodando' sem atividade (locked_at antigo) viram falhou.
+    const { data, error } = await this.sb
+      .from('jobs')
+      .update({ status: 'falhou', last_error: 'interrompida (sem atividade)', locked_at: null, locked_by: null })
+      .eq('status', 'rodando')
+      .lt('locked_at', cutoff)
+      .select('investigation_id');
+    if (error) throw new Error(`recoverStaleJobs: ${error.message}`);
+    const rows = (data as any[]) ?? [];
+    for (const r of rows) {
+      await this.sb
+        .from('investigations')
+        .update({ status: 'falhou', notice: 'Execução interrompida (worker reiniciado).' })
+        .eq('id', r.investigation_id)
+        .eq('status', 'rodando');
+    }
+    return rows.length;
+  }
+
   async setCurrentStep(investigationId: string, step: StepName): Promise<void> {
     const { error } = await this.sb
       .from('jobs')

@@ -11,6 +11,8 @@ import {
   detectFunnelTech,
   funnelDestKey,
   funnelDomain,
+  parseInvestigationMode,
+  stepsForMode,
   round,
   type InvestigationLimits,
   type InvestigationMode,
@@ -67,8 +69,7 @@ export async function runInvestigation(deps: Deps, investigationId: string): Pro
     country: inv.country,
     onlyActive: inv.onlyActive,
     competitors: inv.competitors,
-    mode:
-      inv.mode === 'anunciante' ? 'anunciante' : inv.mode === 'pagina' ? 'pagina' : 'concorrentes',
+    mode: parseInvestigationMode(inv.mode), // erro explícito se vier modo inválido
     reference: inv.query,
     audioPaths: new Map(),
   };
@@ -89,16 +90,41 @@ export async function runInvestigation(deps: Deps, investigationId: string): Pro
     processar_vsl: stepProcessarVsl,
   };
 
-  for (const step of STEP_ORDER) {
-    if (done.has(step)) {
-      log.info(`Pulando etapa já concluída: ${step}`);
-      continue;
+  // Só as etapas que se aplicam ao modo (página pula descoberta/ads).
+  const steps = stepsForMode(ctx.mode);
+
+  try {
+    for (const step of steps) {
+      await ensureActive(deps, investigationId); // cancelamento entre etapas
+      if (done.has(step)) {
+        log.info(`Pulando etapa já concluída: ${step}`);
+        continue;
+      }
+      await runStep(deps, investigationId, step, () => impls[step](deps, ctx));
     }
-    await runStep(deps, investigationId, step, () => impls[step](deps, ctx));
+  } catch (e) {
+    if (e instanceof CancelledError) {
+      log.info(`Investigação ${investigationId} cancelada — mantendo o que já foi coletado.`);
+      return; // não marca concluída nem falhou; status já é 'cancelada'
+    }
+    throw e;
   }
 
   await db.setInvestigationStatus(investigationId, 'concluida');
   log.info(`Investigação ${investigationId} concluída.`);
+}
+
+/** Erro sinalizando cancelamento — não deve marcar a etapa como "falhou". */
+export class CancelledError extends Error {
+  constructor() {
+    super('investigação cancelada');
+    this.name = 'CancelledError';
+  }
+}
+
+/** Lança CancelledError se a investigação foi marcada como 'cancelada'. */
+async function ensureActive(deps: Deps, investigationId: string): Promise<void> {
+  if (await deps.db.isCancelled(investigationId)) throw new CancelledError();
 }
 
 async function runStep(
@@ -116,6 +142,7 @@ async function runStep(
     await db.addEvent(investigationId, step, 'concluida', undefined, meta);
     await db.markStepCompleted(investigationId, step);
   } catch (e) {
+    if (e instanceof CancelledError) throw e; // cancelamento: não marca falhou
     const msg = errMessage(e);
     log.error(`Etapa ${step} falhou`, msg);
     await db.addEvent(investigationId, step, 'falhou', msg);
@@ -204,6 +231,7 @@ async function stepBuscarAds(deps: Deps, ctx: Ctx): Promise<unknown> {
   let semAnunciosProprios = 0;
   let falhas = 0;
   for (const candidate of candidates) {
+    await ensureActive(deps, ctx.investigationId);
     try {
       const { ads, cost } = await deps.ads.fetchAds(candidate, {
         country: ctx.country,
@@ -718,6 +746,7 @@ async function stepCapturarFunil(deps: Deps, ctx: Ctx): Promise<unknown> {
   const pixelIndex = await deps.db.getFunnelPixelIndex();
 
   for (const t of limited) {
+    await ensureActive(deps, ctx.investigationId);
     const domain = funnelDomain(t.url);
     const { id: funnelId } = await deps.db.insertFunnel({
       investigationId: ctx.investigationId,
@@ -838,6 +867,7 @@ async function stepProcessarVsl(deps: Deps, ctx: Ctx): Promise<unknown> {
   let longas = 0;
 
   for (const t of list) {
+    await ensureActive(deps, ctx.investigationId);
     const { id: vslId } = await deps.db.insertVsl({
       investigationId: ctx.investigationId,
       funnelId: t.funnelId,
@@ -890,6 +920,11 @@ async function stepProcessarVsl(deps: Deps, ctx: Ctx): Promise<unknown> {
       let provider: string | null = null;
       let partial = false;
       for (const ch of r.chunks) {
+        // Cancelamento entre trechos: salva o parcial já transcrito e para.
+        if (await deps.db.isCancelled(ctx.investigationId)) {
+          partial = true;
+          break;
+        }
         const chMin = ch.durationSec / 60;
         if (minuteBudget - chMin < 0) {
           partial = true;

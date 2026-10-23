@@ -4,6 +4,8 @@ import {
   classifyCandidate,
   temNarracao,
   SEM_NARRACAO_MSG,
+  parseInvestigationMode,
+  stepsForMode,
   type CandidateMetrics,
   type CandidateStatus,
 } from '@espiao/shared';
@@ -13,6 +15,7 @@ import { STATUS_PT, STATUS_STYLE, EVIDENCE_PT, usdFmt, dateFmt } from '@/lib/for
 import { StepBar } from '@/components/StepBar';
 import { AutoRefresh } from '@/components/AutoRefresh';
 import { Expandable } from '@/components/Expandable';
+import { CancelButton } from '@/components/CancelButton';
 
 export const dynamic = 'force-dynamic';
 
@@ -99,7 +102,10 @@ export default async function InvestigationDetail({ params }: { params: { id: st
   }
 
   const running = inv.status === 'rodando' || inv.status === 'pendente';
-  const isAnunciante = inv.mode === 'anunciante';
+  const mode = parseInvestigationMode(inv.mode);
+  const isAnunciante = mode === 'anunciante';
+  const isPagina = mode === 'pagina';
+  const modeSteps = stepsForMode(mode);
 
   return (
     <div>
@@ -115,7 +121,9 @@ export default async function InvestigationDetail({ params }: { params: { id: st
         <div>
           <h1 className="text-2xl font-semibold">{inv.query}</h1>
           <p className="text-sm text-gray-500">
-            {isAnunciante ? (
+            {isPagina ? (
+              <>Modo: analisar página/VSL · País {inv.country}</>
+            ) : isAnunciante ? (
               <>Modo: analisar anunciante · País {inv.country}</>
             ) : (
               <>
@@ -124,15 +132,21 @@ export default async function InvestigationDetail({ params }: { params: { id: st
             )}{' '}
             · criada {dateFmt(inv.created_at)}
           </p>
-          {!isAnunciante && (
+          {!isAnunciante && !isPagina && (
             <p className="mt-1 text-sm text-gray-600">
               <span className="font-medium">Referência:</span> {inv.query}{' '}
               <span className="text-gray-400">(excluída da lista de concorrentes)</span>
             </p>
           )}
+          {isPagina && (
+            <p className="mt-1 text-sm text-gray-600">
+              <span className="font-medium">Página analisada:</span> {inv.query}
+            </p>
+          )}
         </div>
         <div className="flex items-center gap-2">
           <span className={`badge ${STATUS_STYLE[inv.status]}`}>{STATUS_PT[inv.status]}</span>
+          {running && <CancelButton investigationId={params.id} />}
           <a className="btn-ghost" href={`/api/investigations/${params.id}/export?format=md`}>
             Exportar .md
           </a>
@@ -145,7 +159,7 @@ export default async function InvestigationDetail({ params }: { params: { id: st
         </div>
       </div>
 
-      <div className="mb-5 grid grid-cols-3 gap-3 text-sm">
+      <div className={`mb-5 grid gap-3 text-sm ${isPagina ? 'grid-cols-2' : 'grid-cols-3'}`}>
         <div className="card">
           <div className="text-gray-500">Custo estimado</div>
           <div className="text-lg font-semibold">{usdFmt(Number(inv.estimated_cost_usd))}</div>
@@ -156,10 +170,14 @@ export default async function InvestigationDetail({ params }: { params: { id: st
             {usdFmt(inv.final_cost_usd == null ? null : Number(inv.final_cost_usd))}
           </div>
         </div>
-        <div className="card">
-          <div className="text-gray-500">Concorrentes selecionados</div>
-          <div className="text-lg font-semibold">{cands.length}</div>
-        </div>
+        {!isPagina && (
+          <div className="card">
+            <div className="text-gray-500">
+              {isAnunciante ? 'Empresa analisada' : 'Concorrentes selecionados'}
+            </div>
+            <div className="text-lg font-semibold">{cands.length}</div>
+          </div>
+        )}
       </div>
 
       {inv.notice && (
@@ -171,6 +189,7 @@ export default async function InvestigationDetail({ params }: { params: { id: st
       <div className="grid grid-cols-1 gap-5 lg:grid-cols-[320px_1fr]">
         <StepBar
           investigationId={params.id}
+          steps={modeSteps}
           completed={(job?.completed_steps ?? []) as string[]}
           current={job?.current_step ?? null}
           jobStatus={inv.status}
@@ -179,7 +198,8 @@ export default async function InvestigationDetail({ params }: { params: { id: st
         />
 
         <div className="space-y-5">
-          {/* Candidatos avaliados — sempre visível, mesmo com 0 selecionados. */}
+          {/* Candidatos avaliados — não se aplica ao modo página. */}
+          {!isPagina && (
           <div className="card">
             <h2 className="mb-1 text-lg font-semibold">Candidatos avaliados ({evaluated.length})</h2>
             <p className="mb-3 text-xs text-gray-500">
@@ -251,11 +271,14 @@ export default async function InvestigationDetail({ params }: { params: { id: st
               </div>
             )}
           </div>
+          )}
 
+          {!isPagina && (
           <h2 className="text-lg font-semibold">
             {isAnunciante ? 'Anúncios escalados desta empresa' : 'Concorrentes selecionados'}
           </h2>
-          {cands.length === 0 ? (
+          )}
+          {!isPagina && (cands.length === 0 ? (
             <div className="card text-sm text-gray-500">
               {running
                 ? 'Processando… os anúncios campeões aparecem aqui ao final do pipeline.'
@@ -391,7 +414,7 @@ export default async function InvestigationDetail({ params }: { params: { id: st
                 </div>
               );
             })
-          )}
+          ))}
 
           {/* ── Funil: captura e análise de páginas ── */}
           <div className="card">
